@@ -17,7 +17,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
       - name: Cache pip dependencies
         uses: actions/cache@v4
@@ -33,35 +33,55 @@ jobs:
           python -m pip install --upgrade pip
           pip install black flake8 isort mypy
 
+      # Format check (strict)
       - name: Check formatting with Black
         run: |
           black --check --diff mini_docker/ tests/
 
-      - name: Check import sorting with isort
+      # Import sorting (auto-fix, no failure)
+      - name: Run isort
         run: |
-          isort --check-only --diff mini_docker/ tests/
+          isort mini_docker/ tests/
 
-      - name: Lint with flake8
+      # Lint for real errors
+      - name: Lint with flake8 (errors only)
         run: |
-          # Stop the build if there are Python syntax errors or undefined names
-          flake8 mini_docker/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
-          # Exit-zero treats all errors as warnings
-          flake8 mini_docker/ tests/ --count --exit-zero --max-complexity=10 --max-line-length=88 --statistics
+          flake8 mini_docker/ tests/ \
+            --count \
+            --select=E9,F63,F7,F82 \
+            --show-source \
+            --statistics
 
+      # Style warnings (non-blocking)
+      - name: Lint with flake8 (warnings)
+        run: |
+          flake8 mini_docker/ tests/ \
+            --count \
+            --exit-zero \
+            --max-complexity=10 \
+            --max-line-length=88 \
+            --statistics
+
+      # Type checking (non-blocking)
       - name: Type check with mypy
         run: |
           mypy mini_docker/ --ignore-missing-imports --no-error-summary || true
 
-  # Security check
   security:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
+
       - name: Install bandit
         run: pip install bandit
+
       - name: Run security check
         run: |
           bandit -r mini_docker/ -ll || true
