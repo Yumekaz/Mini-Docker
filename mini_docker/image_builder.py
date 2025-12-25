@@ -22,8 +22,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from mini_docker.utils import (IMAGES_PATH, ensure_directories,
-                               generate_container_id)
+from mini_docker.utils import IMAGES_PATH, ensure_directories, generate_container_id
 
 
 @dataclass
