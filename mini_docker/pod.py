@@ -33,8 +33,12 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional
 
-from mini_docker.utils import (PODS_PATH, ensure_directories,
-                               generate_container_id, generate_container_name)
+from mini_docker.utils import (
+    PODS_PATH,
+    ensure_directories,
+    generate_container_id,
+    generate_container_name,
+)
 
 
 class PodError(Exception):
@@ -237,8 +241,7 @@ class PodManager:
         if pid == 0:
             # Child process - become the infra container
             try:
-                from mini_docker.namespaces import (create_namespaces,
-                                                    sethostname)
+                from mini_docker.namespaces import create_namespaces, sethostname
 
                 # Create shared namespaces
                 create_namespaces(config.shared_namespaces, hostname=config.hostname)

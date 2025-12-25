@@ -20,9 +20,13 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
-from mini_docker.utils import (CONTAINERS_PATH, ensure_directories,
-                               generate_container_id, generate_container_name,
-                               get_container_path)
+from mini_docker.utils import (
+    CONTAINERS_PATH,
+    ensure_directories,
+    generate_container_id,
+    generate_container_name,
+    get_container_path,
+)
 
 
 @dataclass
