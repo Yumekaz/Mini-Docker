@@ -1,0 +1,67 @@
+name: Lint
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-lint-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-lint-
+            ${{ runner.os }}-pip-
+
+      - name: Install linting tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install black flake8 isort mypy
+
+      - name: Check formatting with Black
+        run: |
+          black --check --diff mini_docker/ tests/
+
+      - name: Check import sorting with isort
+        run: |
+          isort --check-only --diff mini_docker/ tests/
+
+      - name: Lint with flake8
+        run: |
+          # Stop the build if there are Python syntax errors or undefined names
+          flake8 mini_docker/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          # Exit-zero treats all errors as warnings
+          flake8 mini_docker/ tests/ --count --exit-zero --max-complexity=10 --max-line-length=88 --statistics
+
+      - name: Type check with mypy
+        run: |
+          mypy mini_docker/ --ignore-missing-imports --no-error-summary || true
+
+  # Security check
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install bandit
+        run: pip install bandit
+      - name: Run security check
+        run: |
+          bandit -r mini_docker/ -ll || true

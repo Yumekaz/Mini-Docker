@@ -1,0 +1,27 @@
+CREATING A MINIMAL ROOTFS FOR MINI-DOCKER
+=========================================
+
+Option 1: Using debootstrap (Debian/Ubuntu)
+-------------------------------------------
+sudo apt-get install debootstrap
+sudo debootstrap --variant=minbase jammy ./rootfs http://archive.ubuntu.com/ubuntu/
+
+Option 2: Using Alpine Linux (Recommended - smaller)
+-----------------------------------------------------
+wget https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/alpine-minirootfs-3.18.4-x86_64.tar.gz
+mkdir -p rootfs
+sudo tar -xzf alpine-minirootfs-3.18.4-x86_64.tar.gz -C rootfs
+
+Option 3: Using BusyBox (Minimal)
+---------------------------------
+mkdir -p rootfs/{bin,proc,sys,dev,etc,tmp}
+wget https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
+chmod +x busybox
+mv busybox rootfs/bin/
+cd rootfs/bin && for cmd in sh ls cat echo mkdir rm cp mv ps mount umount; do ln -s busybox $cmd; done
+
+After creating rootfs:
+----------------------
+1. Ensure /etc/resolv.conf exists for DNS
+2. Create /etc/passwd and /etc/group if needed
+3. Set proper permissions: sudo chown -R root:root rootfs

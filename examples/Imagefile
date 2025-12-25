@@ -1,0 +1,4 @@
+FROM ./rootfs
+RUN echo "Building Custom Image..."
+ENV DEMO_MODE=active
+CMD ["/bin/echo", "Hello from Mini-Docker!"]
