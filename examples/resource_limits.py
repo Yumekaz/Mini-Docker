@@ -66,24 +66,23 @@ def check_cgroups_v2() -> bool:
 def get_rootfs() -> str:
     """Get path to rootfs."""
     return os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "rootfs"
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "rootfs"
     )
 
 
 def example_memory_limit():
     """
     Example 1: Memory Limit
-    
+
     Demonstrates that containers cannot exceed their memory limit.
     When a container tries to allocate more memory than allowed,
     it will be killed by the OOM killer.
     """
     print_header("Example 1: Memory Limit")
-    
+
     memory_limit = "32M"  # 32 megabytes
     print_step(f"Setting memory limit to {memory_limit}")
-    
+
     # Script that tries to allocate more memory than allowed
     memory_script = """
 echo "Attempting to allocate 64MB of memory..."
@@ -96,23 +95,23 @@ dd if=/dev/zero of=/tmp/memtest bs=1M count=64 2>&1
 echo ""
 echo "If you see this, something went wrong with limits"
 """
-    
+
     rootfs = get_rootfs()
-    
+
     print_step("Creating container with memory limit...")
     print_info(f"Memory limit: {memory_limit}")
-    
+
     try:
         container = Container(
             rootfs=rootfs,
             command=["/bin/sh", "-c", memory_script],
             hostname="memory-test",
-            memory_limit=memory_limit
+            memory_limit=memory_limit,
         )
-        
+
         print_step("Running memory-intensive workload...")
         exit_code = container.run()
-        
+
         # Non-zero exit code expected (killed by OOM)
         if exit_code != 0:
             print_result(True, f"Container was killed (exit code: {exit_code})")
@@ -121,7 +120,7 @@ echo "If you see this, something went wrong with limits"
         else:
             print_result(False, "Container completed without being killed")
             return False
-            
+
     except Exception as e:
         print_result(True, f"Container killed: {e}")
         return True
@@ -130,15 +129,15 @@ echo "If you see this, something went wrong with limits"
 def example_cpu_limit():
     """
     Example 2: CPU Limit
-    
+
     Demonstrates CPU throttling. A container limited to 25% CPU
     will only be able to use 25% of one CPU core.
     """
     print_header("Example 2: CPU Limit")
-    
+
     cpu_percent = 25
     print_step(f"Setting CPU limit to {cpu_percent}%")
-    
+
     # Script that burns CPU
     cpu_script = """
 echo "Running CPU-intensive task for 5 seconds..."
@@ -153,32 +152,32 @@ done
 
 echo "CPU task completed"
 """
-    
+
     rootfs = get_rootfs()
-    
+
     print_step("Creating container with CPU limit...")
     print_info(f"CPU limit: {cpu_percent}%")
-    
+
     try:
         container = Container(
             rootfs=rootfs,
             command=["/bin/sh", "-c", cpu_script],
             hostname="cpu-test",
-            cpu_limit=cpu_percent
+            cpu_limit=cpu_percent,
         )
-        
+
         print_step("Running CPU-intensive workload...")
         print_info("(Monitor with 'top' in another terminal)")
-        
+
         start_time = time.time()
         exit_code = container.run()
         elapsed = time.time() - start_time
-        
+
         print_step(f"Container completed in {elapsed:.2f} seconds")
         print_info("CPU was throttled during execution")
         print_result(True, "CPU limiting working correctly!")
         return True
-        
+
     except Exception as e:
         print(f"Error: {e}")
         return False
@@ -187,15 +186,15 @@ echo "CPU task completed"
 def example_pid_limit():
     """
     Example 3: PID Limit (Fork Bomb Protection)
-    
+
     Demonstrates that containers cannot create unlimited processes.
     This protects against fork bombs that could crash the host.
     """
     print_header("Example 3: PID Limit (Fork Bomb Protection)")
-    
+
     pid_limit = 10
     print_step(f"Setting PID limit to {pid_limit}")
-    
+
     # Script that tries to create many processes
     fork_script = """
 echo "Attempting to create 20 processes..."
@@ -217,27 +216,27 @@ echo ""
 echo "Successfully created $count processes"
 echo "Expected: ~10 (the limit)"
 """
-    
+
     rootfs = get_rootfs()
-    
+
     print_step("Creating container with PID limit...")
     print_info(f"PID limit: {pid_limit}")
-    
+
     try:
         container = Container(
             rootfs=rootfs,
             command=["/bin/sh", "-c", fork_script],
             hostname="pid-test",
-            pids_limit=pid_limit
+            pids_limit=pid_limit,
         )
-        
+
         print_step("Running fork bomb simulation...")
         exit_code = container.run()
-        
+
         print_result(True, "PID limiting working correctly!")
         print_info("Fork bomb protection active - host is safe!")
         return True
-        
+
     except Exception as e:
         print(f"Error: {e}")
         return False
@@ -246,16 +245,16 @@ echo "Expected: ~10 (the limit)"
 def example_combined_limits():
     """
     Example 4: Combined Resource Limits
-    
+
     Demonstrates using multiple resource limits together.
     """
     print_header("Example 4: Combined Resource Limits")
-    
+
     print_step("Setting multiple limits:")
     print_info("Memory: 64M")
     print_info("CPU: 50%")
     print_info("PIDs: 15")
-    
+
     # Script showing all limits
     combined_script = """
 echo "Container with combined resource limits:"
@@ -278,9 +277,9 @@ echo "CPU test complete"
 echo ""
 echo "All limits working together!"
 """
-    
+
     rootfs = get_rootfs()
-    
+
     try:
         container = Container(
             rootfs=rootfs,
@@ -288,15 +287,15 @@ echo "All limits working together!"
             hostname="combined-test",
             memory_limit="64M",
             cpu_limit=50,
-            pids_limit=15
+            pids_limit=15,
         )
-        
+
         print_step("Running container with all limits...")
         exit_code = container.run()
-        
+
         print_result(True, "Combined limits working correctly!")
         return True
-        
+
     except Exception as e:
         print(f"Error: {e}")
         return False
@@ -305,13 +304,13 @@ echo "All limits working together!"
 def example_cgroup_info():
     """
     Example 5: Cgroup Information
-    
+
     Shows the actual cgroup settings applied to a container.
     """
     print_header("Example 5: Cgroup Information")
-    
+
     print_step("Creating container and showing cgroup details...")
-    
+
     # Script that shows cgroup info from inside container
     cgroup_script = """
 echo "=== Cgroup Information ==="
@@ -335,9 +334,9 @@ echo ""
 echo "Note: Cgroups control the container from the host,"
 echo "so limits are enforced even if not visible inside."
 """
-    
+
     rootfs = get_rootfs()
-    
+
     try:
         container = Container(
             rootfs=rootfs,
@@ -345,19 +344,21 @@ echo "so limits are enforced even if not visible inside."
             hostname="cgroup-info",
             memory_limit="128M",
             cpu_limit=75,
-            pids_limit=20
+            pids_limit=20,
         )
-        
+
         exit_code = container.run()
-        
+
         print_step("Showing host-side cgroup configuration:")
-        print_info("Cgroups are configured at: /sys/fs/cgroup/mini-docker/<container-id>/")
+        print_info(
+            "Cgroups are configured at: /sys/fs/cgroup/mini-docker/<container-id>/"
+        )
         print_info("  memory.max - Memory limit in bytes")
         print_info("  cpu.max - CPU quota and period")
         print_info("  pids.max - Maximum number of processes")
-        
+
         return True
-        
+
     except Exception as e:
         print(f"Error: {e}")
         return False
@@ -366,24 +367,24 @@ echo "so limits are enforced even if not visible inside."
 def main():
     """Run all resource limit examples."""
     print_header("Mini-Docker Resource Limits Examples")
-    
+
     # Check prerequisites
     if not check_root():
         return 1
-    
+
     if not check_cgroups_v2():
         return 1
-    
+
     rootfs = get_rootfs()
     if not os.path.exists(rootfs):
         print(f"Error: rootfs not found at {rootfs}")
         print("Please run: sudo ./setup.sh")
         return 1
-    
+
     print_step("All prerequisites met!")
     print_info("Cgroups v2: Available")
     print_info(f"Rootfs: {rootfs}")
-    
+
     # Run examples
     examples = [
         ("Memory Limit", example_memory_limit),
@@ -392,7 +393,7 @@ def main():
         ("Combined Limits", example_combined_limits),
         ("Cgroup Information", example_cgroup_info),
     ]
-    
+
     results = []
     for name, func in examples:
         try:
@@ -404,13 +405,13 @@ def main():
         except Exception as e:
             print(f"Error in {name}: {e}")
             results.append((name, False))
-    
+
     # Summary
     print_header("Summary")
     for name, success in results:
         status = "✓ PASSED" if success else "✗ FAILED"
         print(f"  {name}: {status}")
-    
+
     failed = sum(1 for _, success in results if not success)
     if failed:
         print(f"\n{failed} example(s) failed")

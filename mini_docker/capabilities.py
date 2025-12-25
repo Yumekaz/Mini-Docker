@@ -149,6 +149,7 @@ MINIMAL_CAPS = {
 
 class CapabilityError(Exception):
     """Exception raised for capability operations."""
+
     pass
 
 
@@ -172,13 +173,13 @@ class CapData(ctypes.Structure):
 def cap_to_mask(cap: int) -> tuple:
     """
     Convert a capability number to (index, bit_mask).
-    
+
     Capabilities are stored in 32-bit words, so caps 0-31 are in
     the first word, 32-63 in the second, etc.
-    
+
     Args:
         cap: Capability number
-        
+
     Returns:
         (word_index, bit_mask)
     """
@@ -188,28 +189,28 @@ def cap_to_mask(cap: int) -> tuple:
 def get_capabilities() -> dict:
     """
     Get current process capabilities.
-    
+
     Returns:
         Dictionary with 'effective', 'permitted', 'inheritable' sets
     """
     header = CapHeader()
     header.version = _LINUX_CAPABILITY_VERSION_3
     header.pid = 0  # Current process
-    
+
     data = (CapData * _LINUX_CAPABILITY_U32S_3)()
-    
+
     # int capget(cap_user_header_t header, cap_user_data_t data);
     ret = libc.capget(ctypes.byref(header), ctypes.byref(data))
     if ret != 0:
         errno = ctypes.get_errno()
         raise CapabilityError(f"capget failed: errno {errno}")
-    
+
     result = {
         "effective": set(),
         "permitted": set(),
         "inheritable": set(),
     }
-    
+
     for cap in range(CAP_LAST_CAP + 1):
         idx, mask = cap_to_mask(cap)
         if data[idx].effective & mask:
@@ -218,18 +219,18 @@ def get_capabilities() -> dict:
             result["permitted"].add(cap)
         if data[idx].inheritable & mask:
             result["inheritable"].add(cap)
-    
+
     return result
 
 
 def set_capabilities(
     effective: Optional[Set[int]] = None,
     permitted: Optional[Set[int]] = None,
-    inheritable: Optional[Set[int]] = None
+    inheritable: Optional[Set[int]] = None,
 ) -> None:
     """
     Set process capabilities.
-    
+
     Args:
         effective: Set of capabilities for effective set
         permitted: Set of capabilities for permitted set
@@ -238,34 +239,34 @@ def set_capabilities(
     header = CapHeader()
     header.version = _LINUX_CAPABILITY_VERSION_3
     header.pid = 0
-    
+
     data = (CapData * _LINUX_CAPABILITY_U32S_3)()
-    
+
     # Initialize all to zero
     for i in range(_LINUX_CAPABILITY_U32S_3):
         data[i].effective = 0
         data[i].permitted = 0
         data[i].inheritable = 0
-    
+
     # Set capabilities
     if effective:
         for cap in effective:
             if cap <= CAP_LAST_CAP:
                 idx, mask = cap_to_mask(cap)
                 data[idx].effective |= mask
-    
+
     if permitted:
         for cap in permitted:
             if cap <= CAP_LAST_CAP:
                 idx, mask = cap_to_mask(cap)
                 data[idx].permitted |= mask
-    
+
     if inheritable:
         for cap in inheritable:
             if cap <= CAP_LAST_CAP:
                 idx, mask = cap_to_mask(cap)
                 data[idx].inheritable |= mask
-    
+
     # int capset(cap_user_header_t header, cap_user_data_t data);
     ret = libc.capset(ctypes.byref(header), ctypes.byref(data))
     if ret != 0:
@@ -275,24 +276,18 @@ def set_capabilities(
 
 def drop_all_capabilities() -> None:
     """Drop all capabilities."""
-    set_capabilities(
-        effective=set(),
-        permitted=set(),
-        inheritable=set()
-    )
+    set_capabilities(effective=set(), permitted=set(), inheritable=set())
 
 
 def drop_capabilities_except(keep: Set[int]) -> None:
     """
     Drop all capabilities except the specified ones.
-    
+
     Args:
         keep: Set of capability numbers to keep
     """
     set_capabilities(
-        effective=keep,
-        permitted=keep,
-        inheritable=set()  # Don't inherit any
+        effective=keep, permitted=keep, inheritable=set()  # Don't inherit any
     )
 
 
@@ -309,10 +304,10 @@ def apply_minimal_caps() -> None:
 def cap_name_to_number(name: str) -> Optional[int]:
     """
     Convert capability name to number.
-    
+
     Args:
         name: Capability name (e.g., "CAP_NET_ADMIN" or "NET_ADMIN")
-        
+
     Returns:
         Capability number or None if not found
     """
@@ -320,17 +315,17 @@ def cap_name_to_number(name: str) -> Optional[int]:
     name = name.upper()
     if not name.startswith("CAP_"):
         name = "CAP_" + name
-    
+
     return CAPABILITIES.get(name)
 
 
 def cap_number_to_name(cap: int) -> Optional[str]:
     """
     Convert capability number to name.
-    
+
     Args:
         cap: Capability number
-        
+
     Returns:
         Capability name or None if not found
     """
@@ -340,10 +335,10 @@ def cap_number_to_name(cap: int) -> Optional[str]:
 def parse_capability_list(caps: List[str]) -> Set[int]:
     """
     Parse a list of capability names to numbers.
-    
+
     Args:
         caps: List of capability names
-        
+
     Returns:
         Set of capability numbers
     """
@@ -358,48 +353,50 @@ def parse_capability_list(caps: List[str]) -> Set[int]:
 class Capabilities:
     """
     Capability manager for containers.
-    
+
     Example:
         caps = Capabilities()
         caps.add("NET_ADMIN")
         caps.remove("SYS_ADMIN")
         caps.apply()
     """
-    
+
     def __init__(self, use_default: bool = True):
         if use_default:
             self.caps = DEFAULT_CONTAINER_CAPS.copy()
         else:
             self.caps = set()
-    
+
     def add(self, cap: str) -> None:
         """Add a capability by name."""
         num = cap_name_to_number(cap)
         if num is not None:
             self.caps.add(num)
-    
+
     def remove(self, cap: str) -> None:
         """Remove a capability by name."""
         num = cap_name_to_number(cap)
         if num is not None:
             self.caps.discard(num)
-    
+
     def add_all(self) -> None:
         """Add all capabilities."""
         self.caps = set(range(CAP_LAST_CAP + 1))
-    
+
     def remove_all(self) -> None:
         """Remove all capabilities."""
         self.caps = set()
-    
+
     def apply(self) -> None:
         """Apply the capability set."""
         drop_capabilities_except(self.caps)
-    
+
     def get_names(self) -> List[str]:
         """Get list of capability names."""
-        return [cap_number_to_name(c) for c in sorted(self.caps) if cap_number_to_name(c)]
-    
+        return [
+            cap_number_to_name(c) for c in sorted(self.caps) if cap_number_to_name(c)
+        ]
+
     def __contains__(self, cap: str) -> bool:
         """Check if capability is in set."""
         num = cap_name_to_number(cap)

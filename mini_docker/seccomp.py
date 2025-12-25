@@ -92,9 +92,9 @@ BPF_JMP = 0x05
 BPF_RET = 0x06
 BPF_MISC = 0x07
 
-BPF_W = 0x00   # Word (4 bytes)
-BPF_H = 0x08   # Halfword (2 bytes)
-BPF_B = 0x10   # Byte
+BPF_W = 0x00  # Word (4 bytes)
+BPF_H = 0x08  # Halfword (2 bytes)
+BPF_B = 0x10  # Byte
 
 BPF_ABS = 0x20
 BPF_IMM = 0x00
@@ -111,18 +111,18 @@ SECCOMP_RET_KILL_THREAD = 0x00000000
 SECCOMP_RET_KILL = SECCOMP_RET_KILL_THREAD
 SECCOMP_RET_TRAP = 0x00030000
 SECCOMP_RET_ERRNO = 0x00050000
-SECCOMP_RET_TRACE = 0x7ff00000
-SECCOMP_RET_LOG = 0x7ffc0000
-SECCOMP_RET_ALLOW = 0x7fff0000
+SECCOMP_RET_TRACE = 0x7FF00000
+SECCOMP_RET_LOG = 0x7FFC0000
+SECCOMP_RET_ALLOW = 0x7FFF0000
 
 # Audit architecture for x86_64
-AUDIT_ARCH_X86_64 = 0xc000003e
+AUDIT_ARCH_X86_64 = 0xC000003E
 
 # Struct offsets for seccomp_data
-SECCOMP_DATA_NR_OFFSET = 0        # syscall number
-SECCOMP_DATA_ARCH_OFFSET = 4     # audit architecture
-SECCOMP_DATA_IP_OFFSET = 8       # instruction pointer
-SECCOMP_DATA_ARGS_OFFSET = 16    # syscall arguments
+SECCOMP_DATA_NR_OFFSET = 0  # syscall number
+SECCOMP_DATA_ARCH_OFFSET = 4  # audit architecture
+SECCOMP_DATA_IP_OFFSET = 8  # instruction pointer
+SECCOMP_DATA_ARGS_OFFSET = 16  # syscall arguments
 
 # Common syscall numbers for x86_64
 SYSCALLS = {
@@ -409,210 +409,337 @@ SYSCALLS = {
 # All syscalls not in this list are KILLED, not just blocked
 ALLOWED_SYSCALLS_WHITELIST = {
     # === FILE I/O ===
-    "read", "write", "open", "openat", "close", "lseek",
-    "pread64", "pwrite64", "readv", "writev", "preadv", "pwritev",
-    "preadv2", "pwritev2",
-    
+    "read",
+    "write",
+    "open",
+    "openat",
+    "close",
+    "lseek",
+    "pread64",
+    "pwrite64",
+    "readv",
+    "writev",
+    "preadv",
+    "pwritev",
+    "preadv2",
+    "pwritev2",
     # === FILE METADATA ===
-    "stat", "fstat", "lstat", "newfstatat", "statx",
-    "access", "faccessat", "faccessat2",
-    
+    "stat",
+    "fstat",
+    "lstat",
+    "newfstatat",
+    "statx",
+    "access",
+    "faccessat",
+    "faccessat2",
     # === FILE OPERATIONS ===
-    "fcntl", "flock", "fsync", "fdatasync", "truncate", "ftruncate",
-    "rename", "renameat", "renameat2", "link", "linkat",
-    "unlink", "unlinkat", "symlink", "symlinkat", "readlink", "readlinkat",
-    "chmod", "fchmod", "fchmodat", "chown", "fchown", "fchownat", "lchown",
-    "creat", "mknod", "mknodat",
-    
+    "fcntl",
+    "flock",
+    "fsync",
+    "fdatasync",
+    "truncate",
+    "ftruncate",
+    "rename",
+    "renameat",
+    "renameat2",
+    "link",
+    "linkat",
+    "unlink",
+    "unlinkat",
+    "symlink",
+    "symlinkat",
+    "readlink",
+    "readlinkat",
+    "chmod",
+    "fchmod",
+    "fchmodat",
+    "chown",
+    "fchown",
+    "fchownat",
+    "lchown",
+    "creat",
+    "mknod",
+    "mknodat",
     # === DIRECTORY ===
-    "getdents", "getdents64", "getcwd", "chdir", "fchdir",
-    "mkdir", "mkdirat", "rmdir",
-    
+    "getdents",
+    "getdents64",
+    "getcwd",
+    "chdir",
+    "fchdir",
+    "mkdir",
+    "mkdirat",
+    "rmdir",
     # === MEMORY MANAGEMENT ===
-    "mmap", "mprotect", "munmap", "brk", "mremap", "msync",
-    "mincore", "madvise", "mlock", "munlock", "mlockall", "munlockall",
+    "mmap",
+    "mprotect",
+    "munmap",
+    "brk",
+    "mremap",
+    "msync",
+    "mincore",
+    "madvise",
+    "mlock",
+    "munlock",
+    "mlockall",
+    "munlockall",
     "mlock2",
-    
     # === PROCESS CONTROL ===
-    "fork", "vfork", "clone", "clone3", "execve", "execveat",
-    "exit", "exit_group", "wait4",
-    
+    "fork",
+    "vfork",
+    "clone",
+    "clone3",
+    "execve",
+    "execveat",
+    "exit",
+    "exit_group",
+    "wait4",
     # === SIGNALS ===
-    "rt_sigaction", "rt_sigprocmask", "rt_sigreturn", "rt_sigpending",
-    "rt_sigtimedwait", "rt_sigsuspend", "sigaltstack",
-    "kill", "tgkill", "tkill",
-    
+    "rt_sigaction",
+    "rt_sigprocmask",
+    "rt_sigreturn",
+    "rt_sigpending",
+    "rt_sigtimedwait",
+    "rt_sigsuspend",
+    "sigaltstack",
+    "kill",
+    "tgkill",
+    "tkill",
     # === PROCESS INFO ===
-    "getpid", "getppid", "gettid", "getuid", "getgid", "geteuid", "getegid",
-    "getresuid", "getresgid", "getgroups", "getpgid", "getpgrp", "getsid",
-    
+    "getpid",
+    "getppid",
+    "gettid",
+    "getuid",
+    "getgid",
+    "geteuid",
+    "getegid",
+    "getresuid",
+    "getresgid",
+    "getgroups",
+    "getpgid",
+    "getpgrp",
+    "getsid",
     # === PROCESS SETTINGS ===
-    "setuid", "setgid", "setreuid", "setregid", "setresuid", "setresgid",
-    "setgroups", "setpgid", "setsid", "setfsuid", "setfsgid",
-    
+    "setuid",
+    "setgid",
+    "setreuid",
+    "setregid",
+    "setresuid",
+    "setresgid",
+    "setgroups",
+    "setpgid",
+    "setsid",
+    "setfsuid",
+    "setfsgid",
     # === PIPES AND FIFOS ===
-    "pipe", "pipe2", "dup", "dup2", "dup3",
-    
+    "pipe",
+    "pipe2",
+    "dup",
+    "dup2",
+    "dup3",
     # === SOCKET OPERATIONS ===
-    "socket", "connect", "accept", "accept4", "bind", "listen",
-    "sendto", "recvfrom", "sendmsg", "recvmsg", "sendmmsg", "recvmmsg",
-    "shutdown", "getsockname", "getpeername", "socketpair",
-    "setsockopt", "getsockopt",
-    
+    "socket",
+    "connect",
+    "accept",
+    "accept4",
+    "bind",
+    "listen",
+    "sendto",
+    "recvfrom",
+    "sendmsg",
+    "recvmsg",
+    "sendmmsg",
+    "recvmmsg",
+    "shutdown",
+    "getsockname",
+    "getpeername",
+    "socketpair",
+    "setsockopt",
+    "getsockopt",
     # === POLLING AND MULTIPLEXING ===
-    "poll", "ppoll", "select", "pselect6",
-    "epoll_create", "epoll_create1", "epoll_ctl", "epoll_wait",
-    "epoll_pwait", "epoll_pwait2",
-    
+    "poll",
+    "ppoll",
+    "select",
+    "pselect6",
+    "epoll_create",
+    "epoll_create1",
+    "epoll_ctl",
+    "epoll_wait",
+    "epoll_pwait",
+    "epoll_pwait2",
     # === TIME ===
-    "clock_gettime", "clock_getres", "clock_nanosleep",
-    "gettimeofday", "nanosleep", "times",
-    "timer_create", "timer_settime", "timer_gettime",
-    "timer_getoverrun", "timer_delete",
-    "alarm", "getitimer", "setitimer",
-    
+    "clock_gettime",
+    "clock_getres",
+    "clock_nanosleep",
+    "gettimeofday",
+    "nanosleep",
+    "times",
+    "timer_create",
+    "timer_settime",
+    "timer_gettime",
+    "timer_getoverrun",
+    "timer_delete",
+    "alarm",
+    "getitimer",
+    "setitimer",
     # === SYNCHRONIZATION ===
-    "futex", "set_robust_list", "get_robust_list",
-    
+    "futex",
+    "set_robust_list",
+    "get_robust_list",
     # === RANDOM ===
     "getrandom",
-    
     # === RESOURCE LIMITS ===
-    "getrlimit", "setrlimit", "prlimit64", "getrusage",
-    
+    "getrlimit",
+    "setrlimit",
+    "prlimit64",
+    "getrusage",
     # === SCHEDULING ===
-    "sched_yield", "sched_getparam", "sched_setparam",
-    "sched_getscheduler", "sched_setscheduler",
-    "sched_get_priority_max", "sched_get_priority_min",
-    "sched_rr_get_interval", "sched_getaffinity", "sched_setaffinity",
-    "sched_getattr", "sched_setattr",
-    
+    "sched_yield",
+    "sched_getparam",
+    "sched_setparam",
+    "sched_getscheduler",
+    "sched_setscheduler",
+    "sched_get_priority_max",
+    "sched_get_priority_min",
+    "sched_rr_get_interval",
+    "sched_getaffinity",
+    "sched_setaffinity",
+    "sched_getattr",
+    "sched_setattr",
     # === SYSTEM INFO ===
-    "uname", "sysinfo", "getcpu",
-    
+    "uname",
+    "sysinfo",
+    "getcpu",
     # === MISC REQUIRED ===
-    "ioctl", "prctl", "arch_prctl", "set_tid_address",
-    "set_thread_area", "get_thread_area",
+    "ioctl",
+    "prctl",
+    "arch_prctl",
+    "set_tid_address",
+    "set_thread_area",
+    "get_thread_area",
     "capget",  # Read capabilities only, capset removed for security
-    "umask", "sync", "syncfs",
-    
+    "umask",
+    "sync",
+    "syncfs",
     # === EVENT/NOTIFICATION ===
-    "eventfd", "eventfd2", "signalfd", "signalfd4",
-    "timerfd_create", "timerfd_settime", "timerfd_gettime",
+    "eventfd",
+    "eventfd2",
+    "signalfd",
+    "signalfd4",
+    "timerfd_create",
+    "timerfd_settime",
+    "timerfd_gettime",
     "inotify_init1",
-    
     # === MISC FILE ===
-    "fallocate", "splice", "tee", "vmsplice",
-    "copy_file_range", "sync_file_range",
-    "memfd_create", "statfs", "fstatfs",
-    "utime", "utimes", "utimensat", "futimesat",
-    
+    "fallocate",
+    "splice",
+    "tee",
+    "vmsplice",
+    "copy_file_range",
+    "sync_file_range",
+    "memfd_create",
+    "statfs",
+    "fstatfs",
+    "utime",
+    "utimes",
+    "utimensat",
+    "futimesat",
     # === EXTENDED ATTRIBUTES (limited) ===
-    "getxattr", "lgetxattr", "fgetxattr",
-    "listxattr", "llistxattr", "flistxattr",
-    
+    "getxattr",
+    "lgetxattr",
+    "fgetxattr",
+    "listxattr",
+    "llistxattr",
+    "flistxattr",
     # === MEMORY POLICY ===
-    "mbind", "get_mempolicy", "set_mempolicy",
-    
+    "mbind",
+    "get_mempolicy",
+    "set_mempolicy",
     # === MISC ===
-    "pause", "rseq", "close_range", "openat2",
-    "rt_tgsigqueueinfo", "membarrier",
+    "pause",
+    "rseq",
+    "close_range",
+    "openat2",
+    "rt_tgsigqueueinfo",
+    "membarrier",
 }
 
 # Attempting these results in immediate process termination
 ABSOLUTELY_FORBIDDEN_SYSCALLS = {
     # === PROCESS TRACING (Container Escape) ===
-    "ptrace",               # Debug/trace processes - major escape vector
-    "process_vm_readv",     # Read another process's memory
-    "process_vm_writev",    # Write another process's memory
-    "kcmp",                 # Compare kernel objects between processes
-    
+    "ptrace",  # Debug/trace processes - major escape vector
+    "process_vm_readv",  # Read another process's memory
+    "process_vm_writev",  # Write another process's memory
+    "kcmp",  # Compare kernel objects between processes
     # === KERNEL MODULE LOADING (Rootkit Installation) ===
-    "init_module",          # Load kernel module from memory
-    "finit_module",         # Load kernel module from file
-    "delete_module",        # Unload kernel module
-    
+    "init_module",  # Load kernel module from memory
+    "finit_module",  # Load kernel module from file
+    "delete_module",  # Unload kernel module
     # === KERNEL REPLACEMENT (System Compromise) ===
-    "kexec_load",           # Load new kernel for later execution
-    "kexec_file_load",      # Load new kernel from file
-    
+    "kexec_load",  # Load new kernel for later execution
+    "kexec_file_load",  # Load new kernel from file
     # === SYSTEM CONTROL (Denial of Service) ===
-    "reboot",               # Reboot/halt/power-off system
-    "swapon",               # Enable swap partition
-    "swapoff",              # Disable swap partition
-    
+    "reboot",  # Reboot/halt/power-off system
+    "swapon",  # Enable swap partition
+    "swapoff",  # Disable swap partition
     # === FILESYSTEM MOUNTING (Privilege Escalation) ===
-    "mount",                # Mount filesystem
-    "umount",               # Unmount filesystem (old)
-    "umount2",              # Unmount filesystem
-    "pivot_root",           # Change root filesystem
-    
+    "mount",  # Mount filesystem
+    "umount",  # Unmount filesystem (old)
+    "umount2",  # Unmount filesystem
+    "pivot_root",  # Change root filesystem
     # === TIME MANIPULATION (Security Bypass) ===
-    "settimeofday",         # Set system time
-    "clock_settime",        # Set clock time
-    "clock_adjtime",        # Adjust clock time
-    "adjtimex",             # Tune kernel clock
-    
+    "settimeofday",  # Set system time
+    "clock_settime",  # Set clock time
+    "clock_adjtime",  # Adjust clock time
+    "adjtimex",  # Tune kernel clock
     # === HOSTNAME (UTS Namespace Escape) ===
-    "sethostname",          # Set system hostname
-    "setdomainname",        # Set domain name
-    
+    "sethostname",  # Set system hostname
+    "setdomainname",  # Set domain name
     # === LOW-LEVEL I/O (Hardware Access) ===
-    "iopl",                 # Change I/O privilege level
-    "ioperm",               # Set I/O port permissions
-    
+    "iopl",  # Change I/O privilege level
+    "ioperm",  # Set I/O port permissions
     # === ACCOUNTING/LOGGING ===
-    "acct",                 # Process accounting
-    "syslog",               # Read/control kernel log
-    "lookup_dcookie",       # Kernel profiling
-    
+    "acct",  # Process accounting
+    "syslog",  # Read/control kernel log
+    "lookup_dcookie",  # Kernel profiling
     # === BPF/PERFORMANCE (Filter Bypass) ===
-    "bpf",                  # BPF operations
-    "perf_event_open",      # Performance monitoring
-    
+    "bpf",  # BPF operations
+    "perf_event_open",  # Performance monitoring
     # === ADVANCED (Various Risks) ===
-    "userfaultfd",          # User-space page fault handling
-    "fanotify_init",        # Filesystem-wide monitoring
-    "fanotify_mark",        # Mark filesystem objects
-    
+    "userfaultfd",  # User-space page fault handling
+    "fanotify_init",  # Filesystem-wide monitoring
+    "fanotify_mark",  # Mark filesystem objects
     # === KEYRING (Key Management) ===
-    "add_key",              # Add key to keyring
-    "keyctl",               # Keyring control
-    "request_key",          # Request key from keyring
-    
+    "add_key",  # Add key to keyring
+    "keyctl",  # Keyring control
+    "request_key",  # Request key from keyring
     # === CAPABILITIES ===
-    "capset",               # Set capabilities (privilege escalation)
-    
+    "capset",  # Set capabilities (privilege escalation)
     # === NAMESPACE MANIPULATION ===
-    "setns",                # Enter namespace
-    "unshare",              # Create namespace (from inside container)
-    
+    "setns",  # Enter namespace
+    "unshare",  # Create namespace (from inside container)
     # === PERSONALITY ===
-    "personality",          # Set process execution domain
-    
+    "personality",  # Set process execution domain
     # === QUOTAS ===
-    "quotactl",             # Manipulate disk quotas
-    
+    "quotactl",  # Manipulate disk quotas
     # === VIRTUALIZATION ===
-    "vhangup",              # Simulate hangup on terminal
-    
+    "vhangup",  # Simulate hangup on terminal
     # === MOVE PAGES ===
-    "move_pages",           # Move process pages to NUMA node
-    
+    "move_pages",  # Move process pages to NUMA node
     # === SECCOMP ITSELF ===
-    "seccomp",              # Modify seccomp filters
+    "seccomp",  # Modify seccomp filters
 }
 
 
 class SeccompError(Exception):
     """Exception raised for seccomp operations."""
+
     pass
 
 
 def bpf_stmt(code: int, k: int) -> bytes:
     """
     Create a BPF statement (no jumps).
-    
+
     struct sock_filter {
         __u16 code;
         __u8  jt;
@@ -626,7 +753,7 @@ def bpf_stmt(code: int, k: int) -> bytes:
 def bpf_jump(code: int, k: int, jt: int, jf: int) -> bytes:
     """
     Create a BPF jump instruction.
-    
+
     Args:
         code: Instruction code
         k: Value to compare
@@ -639,10 +766,10 @@ def bpf_jump(code: int, k: int, jt: int, jf: int) -> bytes:
 def set_no_new_privs() -> None:
     """
     Set NO_NEW_PRIVS flag.
-    
+
     This prevents the process from gaining new privileges through
     execve (e.g., setuid/setgid executables).
-    
+
     This is REQUIRED before installing a seccomp filter as non-root.
     """
     ret = libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
@@ -654,50 +781,47 @@ def set_no_new_privs() -> None:
 def build_whitelist_filter(allowed_syscalls: Set[str]) -> bytes:
     """
     Build a BPF filter that ONLY allows whitelisted syscalls.
-    
+
     SECURITY: This is a strict whitelist filter:
     - Listed syscalls → ALLOW
     - Everything else → KILL PROCESS (not just block!)
-    
+
     Filter logic:
     1. Load architecture from seccomp_data.arch
     2. If not x86_64 → KILL (prevent architecture-based exploits)
     3. Load syscall number from seccomp_data.nr
     4. For each allowed syscall: if match → ALLOW
     5. Default action: KILL PROCESS
-    
+
     Args:
         allowed_syscalls: Set of syscall names to allow
-        
+
     Returns:
         Bytes of the BPF filter program
     """
     filter_parts = []
-    
+
     # Load architecture from seccomp_data.arch
-    filter_parts.append(bpf_stmt(
-        BPF_LD | BPF_W | BPF_ABS,
-        SECCOMP_DATA_ARCH_OFFSET
-    ))
-    
+    filter_parts.append(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_ARCH_OFFSET))
+
     # Check architecture is x86_64, KILL if not (prevents exploits)
-    filter_parts.append(bpf_jump(
-        BPF_JMP | BPF_JEQ | BPF_K,
-        AUDIT_ARCH_X86_64,
-        1,   # Skip next instruction if equal (continue checking)
-        0    # Continue to KILL
-    ))
-    filter_parts.append(bpf_stmt(
-        BPF_RET | BPF_K,
-        SECCOMP_RET_KILL_PROCESS  # KILL on wrong architecture
-    ))
-    
+    filter_parts.append(
+        bpf_jump(
+            BPF_JMP | BPF_JEQ | BPF_K,
+            AUDIT_ARCH_X86_64,
+            1,  # Skip next instruction if equal (continue checking)
+            0,  # Continue to KILL
+        )
+    )
+    filter_parts.append(
+        bpf_stmt(
+            BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS  # KILL on wrong architecture
+        )
+    )
+
     # Load syscall number from seccomp_data.nr
-    filter_parts.append(bpf_stmt(
-        BPF_LD | BPF_W | BPF_ABS,
-        SECCOMP_DATA_NR_OFFSET
-    ))
-    
+    filter_parts.append(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_NR_OFFSET))
+
     # Convert syscall names to numbers, excluding forbidden syscalls
     allowed_numbers = set()
     for name in allowed_syscalls:
@@ -706,44 +830,40 @@ def build_whitelist_filter(allowed_syscalls: Set[str]) -> bytes:
             continue
         if name in SYSCALLS:
             allowed_numbers.add(SYSCALLS[name])
-    
+
     # Sort for consistent ordering
     sorted_numbers = sorted(allowed_numbers)
-    
+
     # Add jump for each allowed syscall
     num_syscalls = len(sorted_numbers)
-    
+
     for i, syscall_nr in enumerate(sorted_numbers):
         remaining = num_syscalls - i - 1
-        filter_parts.append(bpf_jump(
-            BPF_JMP | BPF_JEQ | BPF_K,
-            syscall_nr,
-            remaining + 1,  # Jump to ALLOW
-            0               # Check next syscall
-        ))
-    
+        filter_parts.append(
+            bpf_jump(
+                BPF_JMP | BPF_JEQ | BPF_K,
+                syscall_nr,
+                remaining + 1,  # Jump to ALLOW
+                0,  # Check next syscall
+            )
+        )
+
     # DEFAULT: KILL PROCESS (syscall not in whitelist)
     # This is the core security guarantee - unknown syscalls = death
-    filter_parts.append(bpf_stmt(
-        BPF_RET | BPF_K,
-        SECCOMP_RET_KILL_PROCESS
-    ))
-    
+    filter_parts.append(bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS))
+
     # ALLOW (only reached if syscall matched whitelist)
-    filter_parts.append(bpf_stmt(
-        BPF_RET | BPF_K,
-        SECCOMP_RET_ALLOW
-    ))
-    
-    return b''.join(filter_parts)
+    filter_parts.append(bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW))
+
+    return b"".join(filter_parts)
 
 
 def install_seccomp_filter(filter_prog: bytes) -> None:
     """
     Install a seccomp BPF filter.
-    
+
     Uses prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog)
-    
+
     Args:
         filter_prog: BPF filter program bytes
     """
@@ -751,32 +871,27 @@ def install_seccomp_filter(filter_prog: bytes) -> None:
     #     unsigned short len;    /* Number of BPF instructions */
     #     struct sock_filter *filter;
     # };
-    
+
     # Calculate number of instructions (each is 8 bytes)
     num_instructions = len(filter_prog) // 8
-    
+
     # Create filter array
     filter_array = ctypes.create_string_buffer(filter_prog)
-    
+
     # Create sock_fprog structure
     class SockFprog(ctypes.Structure):
         _fields_ = [
             ("len", ctypes.c_ushort),
             ("filter", ctypes.POINTER(ctypes.c_char)),
         ]
-    
+
     prog = SockFprog()
     prog.len = num_instructions
     prog.filter = ctypes.cast(filter_array, ctypes.POINTER(ctypes.c_char))
-    
+
     # Install filter
-    ret = libc.prctl(
-        PR_SET_SECCOMP,
-        SECCOMP_MODE_FILTER,
-        ctypes.byref(prog),
-        0, 0
-    )
-    
+    ret = libc.prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, ctypes.byref(prog), 0, 0)
+
     if ret != 0:
         errno = ctypes.get_errno()
         raise SeccompError(f"Failed to install seccomp filter: errno {errno}")
@@ -785,29 +900,29 @@ def install_seccomp_filter(filter_prog: bytes) -> None:
 def apply_seccomp_filter(whitelist: Set[str] = None) -> None:
     """
     Apply a strict whitelist seccomp filter to the current process.
-    
+
     SECURITY MODEL:
     - Uses ALLOWED_SYSCALLS_WHITELIST by default
     - Custom whitelist can be provided but forbidden syscalls are always removed
     - ALL non-whitelisted syscalls result in immediate process termination
     - There is NO blocklist option - only whitelist
-    
+
     Args:
         whitelist: Optional custom set of syscalls to allow
                    (defaults to ALLOWED_SYSCALLS_WHITELIST)
     """
     # Set NO_NEW_PRIVS first (required for non-root)
     set_no_new_privs()
-    
+
     # Use provided whitelist or default
     if whitelist is None:
         allowed = ALLOWED_SYSCALLS_WHITELIST.copy()
     else:
         allowed = whitelist.copy()
-    
+
     # ALWAYS remove forbidden syscalls - no exceptions
     allowed -= ABSOLUTELY_FORBIDDEN_SYSCALLS
-    
+
     # Build and install filter
     filter_prog = build_whitelist_filter(allowed)
     install_seccomp_filter(filter_prog)
@@ -816,26 +931,26 @@ def apply_seccomp_filter(whitelist: Set[str] = None) -> None:
 class Seccomp:
     """
     Seccomp whitelist filter manager.
-    
+
     SECURITY: This class implements a strict whitelist-only model.
     Only syscalls explicitly added to the whitelist are allowed.
     All other syscalls result in immediate process termination.
-    
+
     Example:
         seccomp = Seccomp()
         seccomp.add_allowed("socket")  # Add to whitelist
         seccomp.apply()
-        
+
         # After apply():
         # - socket() works
         # - ptrace() → KILL (never allowed)
         # - newfangled_syscall() → KILL (not in whitelist)
     """
-    
+
     def __init__(self, use_default: bool = True):
         """
         Initialize seccomp filter.
-        
+
         Args:
             use_default: If True, start with ALLOWED_SYSCALLS_WHITELIST
                         If False, start with empty whitelist (very restrictive!)
@@ -844,14 +959,14 @@ class Seccomp:
             self.allowed = ALLOWED_SYSCALLS_WHITELIST.copy()
         else:
             self.allowed = set()
-    
+
     def add_allowed(self, syscall: str) -> bool:
         """
         Add a syscall to the whitelist.
-        
+
         Args:
             syscall: Syscall name to allow
-            
+
         Returns:
             True if added, False if syscall is forbidden or unknown
         """
@@ -861,15 +976,15 @@ class Seccomp:
             self.allowed.add(syscall)
             return True
         return False
-    
+
     def remove_allowed(self, syscall: str) -> None:
         """Remove a syscall from the whitelist."""
         self.allowed.discard(syscall)
-    
+
     def apply(self) -> None:
         """Apply the seccomp whitelist filter."""
         apply_seccomp_filter(whitelist=self.allowed)
-    
+
     def get_filter_info(self) -> dict:
         """Get information about the filter configuration."""
         final_allowed = self.allowed - ABSOLUTELY_FORBIDDEN_SYSCALLS

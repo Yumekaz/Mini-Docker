@@ -30,7 +30,7 @@ Mini-Docker uses a two-part identification system for containers:
 Naming Algorithm:
     def generate_container_id():
         return random.choices('0123456789abcdef', k=12)
-    
+
     def generate_container_name():
         adjective = random.choice(ADJECTIVES)  # ~115 options
         animal = random.choice(ANIMALS)        # ~120 options
@@ -81,60 +81,259 @@ else:
 
 # Adjectives for Docker-style names
 ADJECTIVES = [
-    "admiring", "adoring", "affectionate", "agitated", "amazing",
-    "angry", "awesome", "beautiful", "blissful", "bold",
-    "boring", "brave", "busy", "charming", "clever",
-    "cool", "compassionate", "competent", "condescending", "confident",
-    "cranky", "crazy", "dazzling", "determined", "distracted",
-    "dreamy", "eager", "ecstatic", "elastic", "elated",
-    "elegant", "eloquent", "epic", "exciting", "fervent",
-    "festive", "flamboyant", "focused", "friendly", "frosty",
-    "funny", "gallant", "gifted", "goofy", "gracious",
-    "great", "happy", "hardcore", "heuristic", "hopeful",
-    "hungry", "infallible", "inspiring", "intelligent", "interesting",
-    "jolly", "jovial", "keen", "kind", "laughing",
-    "loving", "lucid", "magical", "modest", "musing",
-    "mystifying", "naughty", "nervous", "nice", "nifty",
-    "nostalgic", "objective", "optimistic", "peaceful", "pedantic",
-    "pensive", "practical", "priceless", "quirky", "quizzical",
-    "recursing", "relaxed", "reverent", "romantic", "sad",
-    "serene", "sharp", "silly", "sleepy", "stoic",
-    "strange", "stupefied", "suspicious", "sweet", "tender",
-    "thirsty", "trusting", "unruffled", "upbeat", "vibrant",
-    "vigilant", "vigorous", "wizardly", "wonderful", "xenodochial",
-    "youthful", "zealous", "zen", "silent", "swift"
+    "admiring",
+    "adoring",
+    "affectionate",
+    "agitated",
+    "amazing",
+    "angry",
+    "awesome",
+    "beautiful",
+    "blissful",
+    "bold",
+    "boring",
+    "brave",
+    "busy",
+    "charming",
+    "clever",
+    "cool",
+    "compassionate",
+    "competent",
+    "condescending",
+    "confident",
+    "cranky",
+    "crazy",
+    "dazzling",
+    "determined",
+    "distracted",
+    "dreamy",
+    "eager",
+    "ecstatic",
+    "elastic",
+    "elated",
+    "elegant",
+    "eloquent",
+    "epic",
+    "exciting",
+    "fervent",
+    "festive",
+    "flamboyant",
+    "focused",
+    "friendly",
+    "frosty",
+    "funny",
+    "gallant",
+    "gifted",
+    "goofy",
+    "gracious",
+    "great",
+    "happy",
+    "hardcore",
+    "heuristic",
+    "hopeful",
+    "hungry",
+    "infallible",
+    "inspiring",
+    "intelligent",
+    "interesting",
+    "jolly",
+    "jovial",
+    "keen",
+    "kind",
+    "laughing",
+    "loving",
+    "lucid",
+    "magical",
+    "modest",
+    "musing",
+    "mystifying",
+    "naughty",
+    "nervous",
+    "nice",
+    "nifty",
+    "nostalgic",
+    "objective",
+    "optimistic",
+    "peaceful",
+    "pedantic",
+    "pensive",
+    "practical",
+    "priceless",
+    "quirky",
+    "quizzical",
+    "recursing",
+    "relaxed",
+    "reverent",
+    "romantic",
+    "sad",
+    "serene",
+    "sharp",
+    "silly",
+    "sleepy",
+    "stoic",
+    "strange",
+    "stupefied",
+    "suspicious",
+    "sweet",
+    "tender",
+    "thirsty",
+    "trusting",
+    "unruffled",
+    "upbeat",
+    "vibrant",
+    "vigilant",
+    "vigorous",
+    "wizardly",
+    "wonderful",
+    "xenodochial",
+    "youthful",
+    "zealous",
+    "zen",
+    "silent",
+    "swift",
 ]
 
 # Animals for Docker-style names
 ANIMALS = [
-    "albatross", "alligator", "alpaca", "ant", "antelope",
-    "ape", "armadillo", "baboon", "badger", "bat",
-    "bear", "beaver", "bee", "bison", "boar",
-    "buffalo", "butterfly", "camel", "caribou", "cat",
-    "caterpillar", "cheetah", "chicken", "chimpanzee", "cobra",
-    "coyote", "crab", "crane", "crocodile", "crow",
-    "deer", "dog", "dolphin", "donkey", "dove",
-    "dragonfly", "duck", "eagle", "elephant", "elk",
-    "emu", "falcon", "ferret", "finch", "fish",
-    "flamingo", "fox", "frog", "gazelle", "gerbil",
-    "giraffe", "goat", "goose", "gorilla", "grasshopper",
-    "hamster", "hare", "hawk", "hedgehog", "heron",
-    "hippo", "hornet", "horse", "hummingbird", "hyena",
-    "jackal", "jaguar", "jay", "jellyfish", "kangaroo",
-    "koala", "lemur", "leopard", "lion", "lizard",
-    "llama", "lobster", "lynx", "magpie", "mallard",
-    "manatee", "meerkat", "mink", "mole", "mongoose",
-    "monkey", "moose", "mouse", "mule", "narwhal",
-    "newt", "octopus", "opossum", "orca", "ostrich",
-    "otter", "owl", "ox", "panda", "panther",
-    "parrot", "peacock", "pelican", "penguin", "pig",
-    "pigeon", "porcupine", "rabbit", "raccoon", "ram",
-    "raven", "salmon", "seal", "shark", "sheep",
-    "sloth", "snail", "snake", "sparrow", "spider",
-    "squid", "squirrel", "stork", "swan", "tiger",
-    "toad", "turkey", "turtle", "vulture", "walrus",
-    "wasp", "weasel", "whale", "wolf", "wolverine",
-    "wombat", "woodpecker", "yak", "zebra"
+    "albatross",
+    "alligator",
+    "alpaca",
+    "ant",
+    "antelope",
+    "ape",
+    "armadillo",
+    "baboon",
+    "badger",
+    "bat",
+    "bear",
+    "beaver",
+    "bee",
+    "bison",
+    "boar",
+    "buffalo",
+    "butterfly",
+    "camel",
+    "caribou",
+    "cat",
+    "caterpillar",
+    "cheetah",
+    "chicken",
+    "chimpanzee",
+    "cobra",
+    "coyote",
+    "crab",
+    "crane",
+    "crocodile",
+    "crow",
+    "deer",
+    "dog",
+    "dolphin",
+    "donkey",
+    "dove",
+    "dragonfly",
+    "duck",
+    "eagle",
+    "elephant",
+    "elk",
+    "emu",
+    "falcon",
+    "ferret",
+    "finch",
+    "fish",
+    "flamingo",
+    "fox",
+    "frog",
+    "gazelle",
+    "gerbil",
+    "giraffe",
+    "goat",
+    "goose",
+    "gorilla",
+    "grasshopper",
+    "hamster",
+    "hare",
+    "hawk",
+    "hedgehog",
+    "heron",
+    "hippo",
+    "hornet",
+    "horse",
+    "hummingbird",
+    "hyena",
+    "jackal",
+    "jaguar",
+    "jay",
+    "jellyfish",
+    "kangaroo",
+    "koala",
+    "lemur",
+    "leopard",
+    "lion",
+    "lizard",
+    "llama",
+    "lobster",
+    "lynx",
+    "magpie",
+    "mallard",
+    "manatee",
+    "meerkat",
+    "mink",
+    "mole",
+    "mongoose",
+    "monkey",
+    "moose",
+    "mouse",
+    "mule",
+    "narwhal",
+    "newt",
+    "octopus",
+    "opossum",
+    "orca",
+    "ostrich",
+    "otter",
+    "owl",
+    "ox",
+    "panda",
+    "panther",
+    "parrot",
+    "peacock",
+    "pelican",
+    "penguin",
+    "pig",
+    "pigeon",
+    "porcupine",
+    "rabbit",
+    "raccoon",
+    "ram",
+    "raven",
+    "salmon",
+    "seal",
+    "shark",
+    "sheep",
+    "sloth",
+    "snail",
+    "snake",
+    "sparrow",
+    "spider",
+    "squid",
+    "squirrel",
+    "stork",
+    "swan",
+    "tiger",
+    "toad",
+    "turkey",
+    "turtle",
+    "vulture",
+    "walrus",
+    "wasp",
+    "weasel",
+    "whale",
+    "wolf",
+    "wolverine",
+    "wombat",
+    "woodpecker",
+    "yak",
+    "zebra",
 ]
 
 
@@ -142,15 +341,15 @@ def generate_container_id() -> str:
     """
     Generate a 12-character hexadecimal container ID.
     Similar to Docker's short container IDs.
-    
+
     Algorithm:
         1. Use secure random selection from hex character set [0-9a-f]
         2. Generate exactly 12 characters
         3. Result is lowercase for consistency
-    
+
     Returns:
         str: 12-char hex string (e.g., "a1b2c3d4e5f6")
-    
+
     Examples:
         >>> generate_container_id()
         'a7f3b2e1c9d0'
@@ -159,22 +358,22 @@ def generate_container_id() -> str:
         >>> len(generate_container_id())
         12
     """
-    return ''.join(random.choices(string.hexdigits.lower()[:16], k=12))
+    return "".join(random.choices(string.hexdigits.lower()[:16], k=12))
 
 
 def generate_container_name() -> str:
     """
     Generate a Docker-style random name (adjective-animal).
-    
+
     Algorithm:
         1. Randomly select one adjective from ADJECTIVES list (~115 options)
         2. Randomly select one animal from ANIMALS list (~120 options)
         3. Combine as "{adjective}-{animal}"
         4. Total unique combinations: ~13,800
-    
+
     Returns:
         str: Name like "frosty-wolf" or "silent-hawk"
-    
+
     Examples:
         >>> generate_container_name()
         'peaceful-penguin'
@@ -210,7 +409,7 @@ def get_container_path(container_id: str) -> str:
 def get_overlay_paths(container_id: str) -> Tuple[str, str, str, str]:
     """
     Get OverlayFS paths for a container.
-    
+
     Returns:
         Tuple of (lower, upper, work, merged) paths
     """
@@ -238,7 +437,7 @@ def check_root() -> bool:
 def read_file(path: str) -> Optional[str]:
     """Safely read a file's contents."""
     try:
-        with open(path, 'r') as f:
+        with open(path, "r") as f:
             return f.read().strip()
     except (IOError, OSError):
         return None
@@ -247,7 +446,7 @@ def read_file(path: str) -> Optional[str]:
 def write_file(path: str, content: str) -> bool:
     """Safely write content to a file."""
     try:
-        with open(path, 'w') as f:
+        with open(path, "w") as f:
             f.write(content)
         return True
     except (IOError, OSError):
@@ -260,7 +459,7 @@ def get_available_ip() -> str:
     Checks existing containers to avoid conflicts.
     """
     used_ips = set()
-    
+
     # Scan existing containers for used IPs
     if os.path.exists(CONTAINERS_PATH):
         for cid in os.listdir(CONTAINERS_PATH):
@@ -268,6 +467,7 @@ def get_available_ip() -> str:
             if os.path.exists(config_path):
                 try:
                     import json
+
                     with open(config_path) as f:
                         config = json.load(f)
                         if "network" in config and "ip" in config["network"]:
@@ -276,13 +476,13 @@ def get_available_ip() -> str:
                                 used_ips.add(ip)
                 except (json.JSONDecodeError, IOError, OSError, KeyError, TypeError):
                     pass
-    
+
     # Find available IP (10.0.0.2 - 10.0.0.254)
     for i in range(2, 255):
         ip = f"10.0.0.{i}"
         if ip not in used_ips:
             return ip
-    
+
     raise RuntimeError("No available IP addresses in 10.0.0.0/24 range")
 
 
@@ -291,4 +491,4 @@ def generate_mac_address() -> str:
     # First byte: set local bit (0x02) and clear multicast bit
     mac = [0x02, 0x42]  # 02:42 is Docker's prefix
     mac.extend([random.randint(0, 255) for _ in range(4)])
-    return ':'.join(f'{b:02x}' for b in mac)
+    return ":".join(f"{b:02x}" for b in mac)
