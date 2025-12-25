@@ -24,8 +24,9 @@ Controllers:
 """
 
 import os
-from typing import Optional, Dict
-from mini_docker.utils import write_file, read_file
+from typing import Dict, Optional
+
+from mini_docker.utils import read_file, write_file
 
 # Cgroups v2 root path
 CGROUP_ROOT = "/sys/fs/cgroup"

@@ -19,12 +19,13 @@ System Calls Used:
 - pivot_root(2): Change root filesystem
 """
 
-import os
 import ctypes
+import os
 import shutil
 import subprocess
 from typing import Optional, Tuple
-from mini_docker.utils import libc, get_overlay_paths
+
+from mini_docker.utils import get_overlay_paths, libc
 
 # Mount flags from <sys/mount.h>
 MS_RDONLY = 1

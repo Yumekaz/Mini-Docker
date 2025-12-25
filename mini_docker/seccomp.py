@@ -61,10 +61,11 @@ BPF Filter Structure:
     };
 """
 
-import os
 import ctypes
+import os
 import struct
 from typing import List, Set
+
 from mini_docker.utils import libc
 
 # Seccomp constants from <linux/seccomp.h>

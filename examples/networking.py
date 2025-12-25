@@ -13,8 +13,8 @@ Run with: sudo python3 networking.py
 """
 
 import os
-import sys
 import subprocess
+import sys
 import time
 
 # Add parent directory to path for imports

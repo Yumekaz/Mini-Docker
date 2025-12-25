@@ -18,12 +18,12 @@ import sys
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mini_docker.container import Container
-from mini_docker.namespaces import Namespace
-from mini_docker.filesystem import Filesystem
-from mini_docker.cgroups import Cgroup
-from mini_docker.seccomp import Seccomp
 from mini_docker.capabilities import Capabilities
+from mini_docker.cgroups import Cgroup
+from mini_docker.container import Container
+from mini_docker.filesystem import Filesystem
+from mini_docker.namespaces import Namespace
+from mini_docker.seccomp import Seccomp
 
 
 def print_header(text: str) -> None:

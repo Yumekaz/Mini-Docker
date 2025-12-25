@@ -42,10 +42,10 @@ Usage Examples:
     Reference by:   a7f3b2e1c9d0, a7f3b2, peaceful-penguin
 """
 
+import ctypes
 import os
 import random
 import string
-import ctypes
 import struct
 from typing import Optional, Tuple
 

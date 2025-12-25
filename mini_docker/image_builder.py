@@ -20,12 +20,10 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple
-from mini_docker.utils import (
-    IMAGES_PATH,
-    generate_container_id,
-    ensure_directories,
-)
+from typing import Dict, List, Optional, Tuple
+
+from mini_docker.utils import (IMAGES_PATH, ensure_directories,
+                               generate_container_id)
 
 
 @dataclass

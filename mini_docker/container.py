@@ -14,50 +14,31 @@ Container Lifecycle:
     create → start → running → stop → stopped → remove
 """
 
+import errno
 import os
-import sys
 import signal
 import subprocess
-from typing import Optional, List, Dict, Tuple
-from mini_docker.namespaces import (
-    create_namespaces,
-    enter_all_namespaces,
-    sethostname,
-    setup_user_namespace,
-    CLONE_NEWPID,
-    CLONE_NEWUTS,
-    CLONE_NEWNS,
-    CLONE_NEWIPC,
-    CLONE_NEWNET,
-    CLONE_NEWUSER,
-)
-from mini_docker.filesystem import (
-    setup_chroot_filesystem,
-    setup_overlay_filesystem,
-    setup_pivot_root,
-    cleanup_overlay,
-    setup_minimal_dev,
-)
-from mini_docker.cgroups import Cgroup, delete_cgroup
-from mini_docker.network import Network, configure_container_network
-from mini_docker.seccomp import Seccomp
+import sys
+from typing import Dict, List, Optional, Tuple
+
 from mini_docker.capabilities import Capabilities, apply_default_container_caps
-from mini_docker.metadata import (
-    ContainerConfig,
-    MetadataStore,
-    save_container_config,
-    load_container_config,
-    update_container_status,
-    get_container_log_path,
-)
+from mini_docker.cgroups import Cgroup, delete_cgroup
+from mini_docker.filesystem import (cleanup_overlay, setup_chroot_filesystem,
+                                    setup_minimal_dev,
+                                    setup_overlay_filesystem, setup_pivot_root)
 from mini_docker.logger import ContainerLogger, OutputCapture
+from mini_docker.metadata import (ContainerConfig, MetadataStore,
+                                  get_container_log_path,
+                                  load_container_config, save_container_config,
+                                  update_container_status)
+from mini_docker.namespaces import (CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS,
+                                    CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
+                                    create_namespaces, enter_all_namespaces,
+                                    sethostname, setup_user_namespace)
+from mini_docker.network import Network, configure_container_network
 from mini_docker.pod import PodManager, load_pod_config
-from mini_docker.utils import (
-    check_root,
-    get_overlay_paths,
-    ensure_directories,
-)
-import errno
+from mini_docker.seccomp import Seccomp
+from mini_docker.utils import check_root, ensure_directories, get_overlay_paths
 
 
 class ContainerError(Exception):
@@ -308,7 +289,7 @@ class Container:
             for ns_type, ns_path in pod_ns_paths.items():
                 try:
                     fd = os.open(ns_path, os.O_RDONLY)
-                    from mini_docker.namespaces import setns, NAMESPACE_FLAGS
+                    from mini_docker.namespaces import NAMESPACE_FLAGS, setns
 
                     setns(fd, NAMESPACE_FLAGS.get(ns_type, 0))
                     os.close(fd)

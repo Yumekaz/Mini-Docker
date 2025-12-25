@@ -20,11 +20,12 @@ The config.json follows the OCI runtime-spec format:
 }
 """
 
-import os
 import json
-from typing import Dict, List, Optional, Any
+import os
 from dataclasses import dataclass, field
-from mini_docker.metadata import ContainerConfig, ResourceLimits, NetworkConfig
+from typing import Any, Dict, List, Optional
+
+from mini_docker.metadata import ContainerConfig, NetworkConfig, ResourceLimits
 
 
 @dataclass

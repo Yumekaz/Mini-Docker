@@ -37,7 +37,8 @@ Network Architecture:
 import os
 import subprocess
 from typing import Optional, Tuple
-from mini_docker.utils import get_available_ip, generate_mac_address
+
+from mini_docker.utils import generate_mac_address, get_available_ip
 
 # Network configuration
 BRIDGE_NAME = "mini-docker0"

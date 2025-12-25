@@ -14,18 +14,15 @@ Metadata includes:
 - PID of container process
 """
 
-import os
 import json
+import os
 import time
-from dataclasses import dataclass, field, asdict
-from typing import Optional, Dict, List, Any
-from mini_docker.utils import (
-    CONTAINERS_PATH,
-    get_container_path,
-    generate_container_id,
-    generate_container_name,
-    ensure_directories,
-)
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional
+
+from mini_docker.utils import (CONTAINERS_PATH, ensure_directories,
+                               generate_container_id, generate_container_name,
+                               get_container_path)
 
 
 @dataclass

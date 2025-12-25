@@ -13,10 +13,11 @@ Namespaces provide isolation for various system resources:
 Uses unshare(2) to create new namespaces and setns(2) to enter existing ones.
 """
 
+import ctypes
 import os
 import sys
-import ctypes
-from typing import Optional, List
+from typing import List, Optional
+
 from mini_docker.utils import libc
 
 # Namespace flags from <linux/sched.h>

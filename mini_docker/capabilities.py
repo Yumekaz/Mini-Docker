@@ -18,10 +18,11 @@ Common Capabilities:
 For containers, we drop most capabilities to reduce attack surface.
 """
 
-import os
 import ctypes
+import os
 import struct
-from typing import Set, List, Optional
+from typing import List, Optional, Set
+
 from mini_docker.utils import libc
 
 # Capability constants from <linux/capability.h>

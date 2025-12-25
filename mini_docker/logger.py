@@ -10,12 +10,13 @@ Provides:
 """
 
 import os
-import sys
-import time
 import select
+import sys
 import threading
+import time
 from datetime import datetime
-from typing import Optional, TextIO, Generator
+from typing import Generator, Optional, TextIO
+
 from mini_docker.utils import get_container_path
 
 
