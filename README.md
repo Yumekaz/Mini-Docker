@@ -90,6 +90,14 @@ exit                 # Exit container
 
 ---
 
+## 🎬 Demo
+
+Interactive terminal recording demonstrating container creation, namespace isolation, and resource limiting.
+
+[![asciicast](https://asciinema.org/a/myYGnwM9pqxHmb3V.svg)](https://asciinema.org/a/myYGnwM9pqxHmb3V)
+
+---
+
 ## 💻 Usage
 
 ### Basic Commands
