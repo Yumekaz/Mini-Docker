@@ -371,6 +371,15 @@ def parse_memory_limit(memory_str: str) -> int:
         raise ValueError(f"Invalid memory format: {memory_str}")
 
 
+def parse_cpu_limit_percent(cpu_percent: Optional[int], period_us: int = 100000) -> Optional[int]:
+    """Convert a CPU percentage to a cgroup quota value."""
+    if cpu_percent is None:
+        return None
+    if cpu_percent < 1 or cpu_percent > 100:
+        raise ValueError("CPU limit must be between 1 and 100 percent")
+    return (cpu_percent * period_us) // 100
+
+
 def parse_user(user_str: str) -> tuple:
     """Parse user string (e.g., 'nobody', '1000', '1000:1000') to (uid, gid)."""
     if not user_str:
@@ -431,6 +440,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f"Error: {e}", file=sys.stderr)
             return 1
 
+    try:
+        cpu_quota = parse_cpu_limit_percent(args.cpu)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     # Parse PIDs limit (support both --pids and --pids-limit)
     max_pids = args.pids or args.pids_limit
 
@@ -472,7 +487,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             name=args.name,
             hostname=args.hostname,
             use_overlay=not args.no_overlay,
-            cpu_quota=args.cpu,
+            cpu_quota=cpu_quota,
             memory_mb=memory_mb,
             max_pids=max_pids,
             env=env,
@@ -484,6 +499,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             uid=uid,
             gid=gid,
             auto_remove=args.rm,
+            detach=args.detach,
             interactive=args.interactive,
             tty=args.tty,
         )
@@ -491,7 +507,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"Created container: {config.id[:12]}")
 
         # Start container
-        pid = container.start(config.id)
+        pid = container.start(config.id, attach=not args.detach)
 
         if args.detach:
             print(f"Container started with PID {pid}")
@@ -547,6 +563,7 @@ def cmd_run_oci(args: argparse.Namespace) -> int:
         # Convert to container config
         config = oci.to_container_config(oci_config, args.bundle)
         config.rootless = args.rootless
+        config.detach = args.detach
 
         # Set name if provided
         if args.name:
@@ -559,7 +576,7 @@ def cmd_run_oci(args: argparse.Namespace) -> int:
 
         print(f"Created container: {config.id[:12]}")
 
-        pid = container.start(config.id)
+        pid = container.start(config.id, attach=not args.detach)
 
         if args.detach:
             print(f"Container started with PID {pid}")
@@ -570,6 +587,9 @@ def cmd_run_oci(args: argparse.Namespace) -> int:
                 exit_code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1
             except ChildProcessError:
                 exit_code = 0
+            from mini_docker.metadata import update_container_status
+
+            update_container_status(config.id, "stopped", exit_code=exit_code)
             return exit_code
 
     except (ContainerError, OCIError) as e:
@@ -798,6 +818,10 @@ def cmd_pod(args: argparse.Namespace) -> int:
         all_containers = container.list(all_containers=True)
 
         pod_filter = getattr(args, "pod", None)
+        if pod_filter:
+            resolved_pod = load_pod_config(pod_filter)
+            if resolved_pod:
+                pod_filter = resolved_pod.id
 
         print(f"{'CONTAINER ID':<14} {'POD':<14} {'NAME':<20} {'STATUS'}")
         for c in all_containers:
@@ -925,6 +949,8 @@ def cmd_info(args: argparse.Namespace) -> int:
     """Handle info command - display system information."""
     import platform
 
+    from mini_docker.utils import MINI_DOCKER_ROOT
+
     # Gather system information
     info = {
         "Version": __version__,
@@ -974,7 +1000,7 @@ def cmd_info(args: argparse.Namespace) -> int:
     info["Images"] = str(len(list_images()))
 
     # Storage path
-    info["Storage"] = os.path.expanduser("~/.mini-docker")
+    info["Storage"] = MINI_DOCKER_ROOT
 
     if args.format == "json":
         print(json.dumps(info, indent=2))
@@ -1013,7 +1039,8 @@ def cmd_version(args: argparse.Namespace) -> int:
 def cmd_cleanup(args: argparse.Namespace) -> int:
     """Handle cleanup command - remove unused resources."""
     from mini_docker.container import Container
-    from mini_docker.image_builder import list_images, remove_image
+    from mini_docker.image_builder import list_images
+    from mini_docker.utils import OVERLAY_PATH
 
     # Confirm unless --force
     if not args.force and not args.all and not args.containers and not args.images:
@@ -1056,11 +1083,9 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
     # Clean volumes
     if args.all or args.volumes:
         # Clean up overlay directories
-        storage_path = os.path.expanduser("~/.mini-docker")
-        overlay_path = os.path.join(storage_path, "overlay")
-        if os.path.exists(overlay_path):
-            for item in os.listdir(overlay_path):
-                item_path = os.path.join(overlay_path, item)
+        if os.path.exists(OVERLAY_PATH):
+            for item in os.listdir(OVERLAY_PATH):
+                item_path = os.path.join(OVERLAY_PATH, item)
                 if os.path.isdir(item_path):
                     try:
                         shutil.rmtree(item_path)

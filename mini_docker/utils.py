@@ -43,17 +43,33 @@ Usage Examples:
 """
 
 import ctypes
+import ctypes.util
 import os
 import random
-import string
+import secrets
 import struct
+import tempfile
 from typing import Optional, Tuple
+
+
+def _get_effective_uid() -> Optional[int]:
+    """Return the current effective UID when available."""
+    geteuid = getattr(os, "geteuid", None)
+    if callable(geteuid):
+        try:
+            return geteuid()
+        except OSError:
+            return None
+    return None
+
+
+_EFFECTIVE_UID = _get_effective_uid()
 
 # Base paths for Mini-Docker
 # Determine the root directory for storage
 if os.environ.get("MINI_DOCKER_ROOT"):
     MINI_DOCKER_ROOT = os.environ["MINI_DOCKER_ROOT"]
-elif os.geteuid() == 0:
+elif _EFFECTIVE_UID == 0:
     MINI_DOCKER_ROOT = "/var/lib/mini-docker"
 else:
     # Use standard XDG data home for rootless mode
@@ -68,7 +84,7 @@ PODS_PATH = f"{MINI_DOCKER_ROOT}/pods"
 # Determine run directory (for PIDs, sockets)
 if os.environ.get("MINI_DOCKER_RUN"):
     RUN_PATH = os.environ["MINI_DOCKER_RUN"]
-elif os.geteuid() == 0:
+elif _EFFECTIVE_UID == 0:
     RUN_PATH = "/var/run/mini-docker"
 else:
     # Use standard XDG runtime dir
@@ -76,8 +92,9 @@ else:
     if xdg_runtime:
         RUN_PATH = os.path.join(xdg_runtime, "mini-docker")
     else:
-        # Fallback to tmp location incorporating UID
-        RUN_PATH = f"/tmp/mini-docker-{os.geteuid()}"
+        # Fallback to a temp directory that also works on non-Linux hosts.
+        suffix = str(_EFFECTIVE_UID) if _EFFECTIVE_UID is not None else "user"
+        RUN_PATH = os.path.join(tempfile.gettempdir(), f"mini-docker-{suffix}")
 
 # Adjectives for Docker-style names
 ADJECTIVES = [
@@ -358,7 +375,7 @@ def generate_container_id() -> str:
         >>> len(generate_container_id())
         12
     """
-    return "".join(random.choices(string.hexdigits.lower()[:16], k=12))
+    return secrets.token_hex(6)
 
 
 def generate_container_name() -> str:
@@ -426,12 +443,34 @@ def get_overlay_paths(container_id: str) -> Tuple[str, str, str, str]:
 try:
     libc = ctypes.CDLL("libc.so.6", use_errno=True)
 except OSError:
-    libc = ctypes.CDLL(None, use_errno=True)
+    libc_name = ctypes.util.find_library("c")
+    if libc_name:
+        libc = ctypes.CDLL(libc_name, use_errno=True)
+    elif os.name == "nt":
+        libc = ctypes.CDLL("msvcrt.dll", use_errno=True)
+    else:
+        libc = ctypes.CDLL("", use_errno=True)
 
 
 def check_root() -> bool:
     """Check if running as root."""
-    return os.geteuid() == 0
+    return _EFFECTIVE_UID == 0
+
+
+def is_process_alive(pid: Optional[int]) -> bool:
+    """Check whether a PID is still alive."""
+    if pid is None or pid <= 0:
+        return False
+
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
 
 
 def read_file(path: str) -> Optional[str]:

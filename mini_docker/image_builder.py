@@ -17,6 +17,7 @@ Each instruction creates a layer in the OverlayFS structure.
 """
 
 import os
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -82,7 +83,7 @@ def parse_image_file(content: str) -> List[Tuple[str, str]]:
 
         # Handle line continuation
         if stripped.endswith("\\"):
-            current_line += stripped[:-1] + " "
+            current_line += stripped[:-1].rstrip() + " "
             continue
 
         current_line += stripped
@@ -125,6 +126,7 @@ class ImageBuilder:
         self.env: Dict[str, str] = {}
         self.workdir = "/"
         self.cmd: List[str] = []
+        self.entrypoint: List[str] = []
 
     def build(self, build_file: str, name: str = "", no_cache: bool = False) -> str:
         """
@@ -176,6 +178,7 @@ class ImageBuilder:
             env=self.env,
             workdir=self.workdir,
             cmd=self.cmd,
+            entrypoint=self.entrypoint,
         )
         self._save_config(image_id, config)
 
@@ -251,8 +254,7 @@ class ImageBuilder:
         else:
             prev_path = layer_path
 
-        # Execute command in chroot
-        # This is simplified - real implementation would use namespaces
+        # Execute the command inside the layer rootfs, not on the host.
         try:
             # Copy from previous layer
             if prev_path != layer_path:
@@ -260,16 +262,31 @@ class ImageBuilder:
                     prev_path, layer_path, dirs_exist_ok=True, symlinks=True
                 )
 
-            # Run command
+            if os.name != "posix" or not hasattr(os, "geteuid"):
+                raise BuildError("RUN instructions require a Linux host")
+            if os.geteuid() != 0:
+                raise BuildError("RUN instructions require root privileges")
+
+            chroot_bin = shutil.which("chroot")
+            if not chroot_bin:
+                raise BuildError("RUN instructions require the host 'chroot' command")
+
+            run_command = args
+            if self.workdir and self.workdir != "/":
+                run_command = f"cd {shlex.quote(self.workdir)} && {args}"
+
             result = subprocess.run(
-                ["/bin/sh", "-c", args],
-                cwd=layer_path,
+                [chroot_bin, layer_path, "/bin/sh", "-c", run_command],
                 capture_output=True,
                 text=True,
+                env=self.env or None,
             )
 
             if result.returncode != 0:
-                raise BuildError(f"RUN failed: {result.stderr}")
+                stderr = result.stderr.strip()
+                stdout = result.stdout.strip()
+                details = stderr or stdout or f"exit code {result.returncode}"
+                raise BuildError(f"RUN failed: {details}")
 
         except subprocess.CalledProcessError as e:
             raise BuildError(f"RUN failed: {e}")
@@ -339,11 +356,11 @@ class ImageBuilder:
             import json
 
             try:
-                self.cmd = json.loads(args)
+                self.entrypoint = json.loads(args)
             except json.JSONDecodeError:
-                self.cmd = [args]
+                self.entrypoint = ["/bin/sh", "-c", args]
         else:
-            self.cmd = [args]
+            self.entrypoint = ["/bin/sh", "-c", args]
 
     def _save_config(self, image_id: str, config: ImageConfig) -> None:
         """Save image configuration."""

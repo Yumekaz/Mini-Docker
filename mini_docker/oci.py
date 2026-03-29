@@ -296,6 +296,7 @@ def oci_to_container_config(oci_config: OCIConfig, bundle_path: str) -> Containe
         workdir=oci_config.process.cwd,
         resources=resources,
         namespaces=namespaces,
+        network_enabled="net" in namespaces,
         capabilities=caps,
         seccomp_enabled=bool(oci_config.linux.seccomp),
     )

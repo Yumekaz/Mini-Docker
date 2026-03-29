@@ -10,6 +10,7 @@ Provides:
 """
 
 import os
+import re
 import select
 import sys
 import threading
@@ -18,6 +19,8 @@ from datetime import datetime
 from typing import Generator, Optional, TextIO
 
 from mini_docker.utils import get_container_path
+
+TIMESTAMP_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}) (?P<message>.*)$")
 
 
 class ContainerLogger:
@@ -147,6 +150,12 @@ def read_logs(
     if not os.path.exists(log_path):
         return
 
+    def strip_timestamp_prefix(line: str) -> str:
+        match = TIMESTAMP_RE.match(line.rstrip("\n"))
+        if match:
+            return match.group("message")
+        return line.rstrip("\n")
+
     # Read existing content
     with open(log_path, "r") as f:
         lines = f.readlines()
@@ -158,11 +167,9 @@ def read_logs(
     # Yield existing lines
     for line in lines:
         if not timestamps:
-            # Remove timestamp (first 24 chars)
-            parts = line.split(" ", 1)
-            if len(parts) > 1:
-                line = parts[1]
-        yield line.rstrip("\n")
+            yield strip_timestamp_prefix(line)
+        else:
+            yield line.rstrip("\n")
 
     # Follow mode
     if follow:
@@ -174,10 +181,9 @@ def read_logs(
                 line = f.readline()
                 if line:
                     if not timestamps:
-                        parts = line.split(" ", 1)
-                        if len(parts) > 1:
-                            line = parts[1]
-                    yield line.rstrip("\n")
+                        yield strip_timestamp_prefix(line)
+                    else:
+                        yield line.rstrip("\n")
                 else:
                     time.sleep(0.1)
 
@@ -270,14 +276,13 @@ def print_logs(
         tail: Number of lines from end
         timestamps: Show timestamps for each line
     """
-    from datetime import datetime
-
     try:
-        for line in read_logs(container_id, follow=follow, tail=tail):
-            if timestamps:
-                ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-                print(f"{ts} {line}")
-            else:
-                print(line)
+        for line in read_logs(
+            container_id,
+            follow=follow,
+            tail=tail,
+            timestamps=timestamps,
+        ):
+            print(line)
     except KeyboardInterrupt:
         pass

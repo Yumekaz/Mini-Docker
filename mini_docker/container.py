@@ -17,11 +17,10 @@ Container Lifecycle:
 import errno
 import os
 import signal
-import subprocess
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
-from mini_docker.capabilities import Capabilities, apply_default_container_caps
+from mini_docker.capabilities import Capabilities
 from mini_docker.cgroups import Cgroup, delete_cgroup
 from mini_docker.filesystem import (
     cleanup_overlay,
@@ -30,25 +29,17 @@ from mini_docker.filesystem import (
     setup_overlay_filesystem,
     setup_pivot_root,
 )
-from mini_docker.logger import ContainerLogger, OutputCapture
+from mini_docker.logger import ContainerLogger
 from mini_docker.metadata import (
     ContainerConfig,
     MetadataStore,
-    get_container_log_path,
     load_container_config,
     save_container_config,
     update_container_status,
 )
 from mini_docker.namespaces import (
-    CLONE_NEWIPC,
-    CLONE_NEWNET,
-    CLONE_NEWNS,
-    CLONE_NEWPID,
-    CLONE_NEWUSER,
-    CLONE_NEWUTS,
     create_namespaces,
     enter_all_namespaces,
-    sethostname,
     setup_user_namespace,
 )
 from mini_docker.network import Network, configure_container_network
@@ -99,7 +90,14 @@ class Container:
         workdir: str = "/",
         pod_id: Optional[str] = None,
         rootless: bool = False,
-        **kwargs,
+        network: bool = False,
+        volumes: Optional[List[Dict[str, str]]] = None,
+        uid: Optional[int] = None,
+        gid: Optional[int] = None,
+        auto_remove: bool = False,
+        interactive: bool = False,
+        tty: bool = False,
+        detach: bool = False,
     ) -> ContainerConfig:
         """
         Create a new container.
@@ -129,6 +127,14 @@ class Container:
         # Create configuration
         from mini_docker.metadata import ResourceLimits
 
+        pod = load_pod_config(pod_id) if pod_id else None
+        if pod_id and not pod:
+            raise ContainerError(f"Pod not found: {pod_id}")
+
+        namespaces = ["pid", "uts", "mnt", "ipc"]
+        if (pod and "net" in pod.shared_namespaces) or (network and not pod_id):
+            namespaces.append("net")
+
         resources = ResourceLimits(
             cpu_quota=cpu_quota,
             memory_mb=memory_mb,
@@ -144,8 +150,19 @@ class Container:
             resources=resources,
             env=env or {},
             workdir=workdir,
+            volumes=volumes or [],
+            uid=uid,
+            gid=gid,
             pod_id=pod_id,
             rootless=rootless,
+            auto_remove=auto_remove,
+            detach=detach,
+            interactive=interactive,
+            tty=tty,
+            network_enabled=(network and not pod_id) or bool(
+                pod and "net" in pod.shared_namespaces
+            ),
+            namespaces=namespaces,
         )
 
         # Set up overlay paths if using overlay
@@ -161,7 +178,7 @@ class Container:
 
         return config
 
-    def start(self, container_id: str) -> int:
+    def start(self, container_id: str, attach: Optional[bool] = None) -> int:
         """
         Start a container.
 
@@ -174,6 +191,9 @@ class Container:
         config = load_container_config(container_id)
         if not config:
             raise ContainerError(f"Container not found: {container_id}")
+
+        if attach is None:
+            attach = not config.detach
 
         if config.status == "running":
             raise ContainerError(f"Container already running: {container_id}")
@@ -198,7 +218,12 @@ class Container:
             os.close(c2p_r)
             # Child process - this becomes the container
             try:
-                self._run_container(config, sync_read=p2c_r, sync_write=c2p_w)
+                self._run_container(
+                    config,
+                    sync_read=p2c_r,
+                    sync_write=c2p_w,
+                    attach=attach,
+                )
             except Exception as e:
                 print(f"Container error: {e}", file=sys.stderr)
                 os._exit(1)
@@ -209,12 +234,20 @@ class Container:
 
             # Parent process
 
-            # Wait for child to unshare (if rootless)
-            if config.rootless:
+            # Wait for child namespace setup before mutating user mappings or network.
+            try:
+                ready = os.read(c2p_r, 1)
+            except OSError:
+                ready = b""
+
+            if ready != b"R":
+                os.close(p2c_w)
+                os.close(c2p_r)
                 try:
-                    os.read(c2p_r, 1)
+                    os.waitpid(pid, 0)
                 except OSError:
                     pass
+                raise ContainerError("Container failed during early startup")
 
             # Setup user namespace for rootless
             if config.rootless:
@@ -225,25 +258,17 @@ class Container:
                         f"Warning: Failed to setup user namespace: {e}", file=sys.stderr
                     )
 
-            # Signal child to proceed
-            try:
-                os.write(p2c_w, b"X")
-            except OSError:
-                pass
-
-            os.close(p2c_w)
-            os.close(c2p_r)
-
-            # Update status
-            update_container_status(container_id, "running", pid=pid)
-
-            # Set up networking from parent
-            if "net" in config.namespaces and not config.rootless:
+            # Set up networking from parent after the child entered its net namespace.
+            if (
+                config.network_enabled
+                and "net" in config.namespaces
+                and not config.rootless
+                and not config.pod_id
+            ):
                 try:
                     network = Network(config.id)
                     veth_host, veth_container, ip = network.setup(pid)
 
-                    # Update config with network info
                     config = load_container_config(container_id)
                     if config:
                         config.network.ip = ip
@@ -251,7 +276,22 @@ class Container:
                         config.network.veth_container = veth_container
                         save_container_config(config)
                 except Exception as e:
-                    print(f"Warning: Network setup failed: {e}")
+                    print(f"Warning: Network setup failed: {e}", file=sys.stderr)
+
+            # Signal child to proceed
+            try:
+                os.write(p2c_w, b"X")
+            except OSError:
+                pass
+
+            # Update status
+            update_container_status(container_id, "running", pid=pid)
+
+            if config.pod_id:
+                self.pods.add_container(config.pod_id, config.id)
+
+            os.close(p2c_w)
+            os.close(c2p_r)
 
             return pid
 
@@ -260,6 +300,7 @@ class Container:
         config: ContainerConfig,
         sync_read: Optional[int] = None,
         sync_write: Optional[int] = None,
+        attach: bool = False,
     ) -> None:
         """
         Run the container (called in child process after fork).
@@ -322,25 +363,31 @@ class Container:
                     rootless=config.rootless,
                 )
 
-            # Signal parent we have unshared
-            if config.rootless and sync_write is not None:
+            # Signal parent we have finished namespace setup.
+            if sync_write is not None:
                 try:
-                    os.write(sync_write, b"U")  # Unshared
+                    os.write(sync_write, b"R")
                 except OSError:
                     pass
 
-            # Wait for parent to set up user mappings
+            # Wait for parent to finish user mapping and network setup.
             if sync_read is not None:
-                if config.rootless:
-                    try:
-                        os.read(sync_read, 1)
-                    except OSError:
-                        pass
+                try:
+                    proceed = os.read(sync_read, 1)
+                except OSError:
+                    proceed = b""
 
                 # Cleanup pipes
                 os.close(sync_read)
                 if sync_write is not None:
                     os.close(sync_write)
+
+                if proceed != b"X":
+                    raise ContainerError("Parent process failed during startup")
+
+            refreshed_config = load_container_config(config.id)
+            if refreshed_config:
+                config = refreshed_config
 
             # Set up filesystem
             rootfs_to_pivot = config.rootfs
@@ -377,7 +424,7 @@ class Container:
                 setup_chroot_filesystem(rootfs_to_pivot)
 
             # Configure network inside container
-            if "net" in config.namespaces and config.network.ip:
+            if config.network_enabled and "net" in config.namespaces and config.network.ip:
                 try:
                     configure_container_network(config.network.ip)
                 except Exception as e:
@@ -416,9 +463,28 @@ class Container:
                 except Exception as e:
                     logger.write(f"Warning: Seccomp setup failed: {e}\n")
 
+            if config.gid is not None:
+                os.setgid(config.gid)
+            if config.uid is not None:
+                os.setuid(config.uid)
+
             # Execute command
             logger.write(f"Starting: {' '.join(config.command)}\n")
             logger.close()
+
+            if not attach:
+                log_fd = os.open(
+                    logger.log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
+                )
+                os.dup2(log_fd, sys.stdout.fileno())
+                os.dup2(log_fd, sys.stderr.fileno())
+
+                if not config.interactive:
+                    devnull_fd = os.open(os.devnull, os.O_RDONLY)
+                    os.dup2(devnull_fd, sys.stdin.fileno())
+                    os.close(devnull_fd)
+
+                os.close(log_fd)
 
             # Replace process with command
             os.execvp(config.command[0], config.command)

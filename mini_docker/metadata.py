@@ -1,24 +1,16 @@
 #!/usr/bin/env python3
 """
-Container Metadata Storage for Mini-Docker.
+Container metadata storage for Mini-Docker.
 
 Stores container configuration and state in JSON format:
 /var/lib/mini-docker/containers/<id>/config.json
-
-Metadata includes:
-- Container ID and name
-- Rootfs and overlay paths
-- Resource limits (CPU, memory)
-- Network configuration
-- Creation time and status
-- PID of container process
 """
 
 import json
 import os
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from mini_docker.utils import (
     CONTAINERS_PATH,
@@ -26,6 +18,7 @@ from mini_docker.utils import (
     generate_container_id,
     generate_container_name,
     get_container_path,
+    is_process_alive,
 )
 
 
@@ -45,8 +38,8 @@ class NetworkConfig:
 class ResourceLimits:
     """Resource limits for a container."""
 
-    cpu_quota: Optional[int] = None  # microseconds
-    cpu_period: int = 100000  # microseconds
+    cpu_quota: Optional[int] = None
+    cpu_period: int = 100000
     memory_mb: Optional[int] = None
     max_pids: Optional[int] = None
 
@@ -60,50 +53,36 @@ class ContainerConfig:
     rootfs: str = ""
     command: List[str] = field(default_factory=list)
 
-    # Overlay filesystem paths
     overlay_lower: str = ""
     overlay_upper: str = ""
     overlay_work: str = ""
     overlay_merged: str = ""
-
-    # Use overlay or chroot
     use_overlay: bool = True
 
-    # Resource limits
     resources: ResourceLimits = field(default_factory=ResourceLimits)
-
-    # Network configuration
     network: NetworkConfig = field(default_factory=NetworkConfig)
+    namespaces: List[str] = field(default_factory=lambda: ["pid", "uts", "mnt", "ipc"])
 
-    # Namespaces to create
-    namespaces: List[str] = field(
-        default_factory=lambda: ["pid", "uts", "mnt", "ipc", "net"]
-    )
-
-    # Container hostname
     hostname: str = ""
-
-    # Environment variables
     env: Dict[str, str] = field(default_factory=dict)
-
-    # Working directory
     workdir: str = "/"
-
-    # User to run as
     user: str = "root"
+    uid: Optional[int] = None
+    gid: Optional[int] = None
 
-    # Rootless mode
     rootless: bool = False
-
-    # Pod membership
     pod_id: Optional[str] = None
+    network_enabled: bool = False
+    volumes: List[Dict[str, str]] = field(default_factory=list)
+    auto_remove: bool = False
+    detach: bool = False
+    interactive: bool = False
+    tty: bool = False
 
-    # Security
     capabilities: List[str] = field(default_factory=list)
     seccomp_enabled: bool = True
 
-    # State
-    status: str = "created"  # created, running, stopped, paused
+    status: str = "created"
     pid: Optional[int] = None
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
@@ -119,71 +98,95 @@ class ContainerConfig:
             self.hostname = self.name
 
 
-def container_exists(container_id: str) -> bool:
-    """Check if a container exists."""
-    config_path = os.path.join(get_container_path(container_id), "config.json")
-    return os.path.exists(config_path)
+def _container_config_path(container_id: str) -> str:
+    return os.path.join(get_container_path(container_id), "config.json")
 
 
-def save_container_config(config: ContainerConfig) -> str:
-    """
-    Save container configuration to disk.
-
-    Args:
-        config: ContainerConfig instance
-
-    Returns:
-        Path to the config file
-    """
-    ensure_directories()
-
-    container_path = get_container_path(config.id)
-    os.makedirs(container_path, exist_ok=True)
-
-    config_path = os.path.join(container_path, "config.json")
-
-    # Convert to dict, handling nested dataclasses
-    data = asdict(config)
-
-    with open(config_path, "w") as f:
-        json.dump(data, f, indent=2)
-
-    return config_path
+def _list_container_ids() -> List[str]:
+    if not os.path.exists(CONTAINERS_PATH):
+        return []
+    return sorted(os.listdir(CONTAINERS_PATH))
 
 
-def load_container_config(container_id: str) -> Optional[ContainerConfig]:
-    """
-    Load container configuration from disk.
-
-    Args:
-        container_id: Container ID (or prefix)
-
-    Returns:
-        ContainerConfig instance or None if not found
-    """
-    # Find container by ID or prefix
-    full_id = find_container_id(container_id)
-    if not full_id:
-        return None
-
-    config_path = os.path.join(get_container_path(full_id), "config.json")
-
+def _read_container_data(container_id: str) -> Optional[Dict]:
+    config_path = _container_config_path(container_id)
     if not os.path.exists(config_path):
         return None
 
     try:
         with open(config_path, "r") as f:
-            data = json.load(f)
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
 
-        # Convert nested dicts to dataclasses
+
+def _hydrate_container_config(data: Dict) -> Optional[ContainerConfig]:
+    try:
         if "resources" in data and isinstance(data["resources"], dict):
             data["resources"] = ResourceLimits(**data["resources"])
         if "network" in data and isinstance(data["network"], dict):
             data["network"] = NetworkConfig(**data["network"])
-
         return ContainerConfig(**data)
-    except (json.JSONDecodeError, TypeError, KeyError):
+    except (TypeError, KeyError):
         return None
+
+
+def _refresh_container_state(config: ContainerConfig) -> ContainerConfig:
+    if config.status != "running":
+        return config
+
+    if not is_process_alive(config.pid):
+        config.status = "stopped"
+        config.pid = None
+        if config.finished_at is None:
+            config.finished_at = time.time()
+        save_container_config(config)
+
+    return config
+
+
+def _load_container_config_by_id(
+    container_id: str, refresh_state: bool = True
+) -> Optional[ContainerConfig]:
+    data = _read_container_data(container_id)
+    if not data:
+        return None
+
+    config = _hydrate_container_config(data)
+    if not config:
+        return None
+
+    if refresh_state:
+        config = _refresh_container_state(config)
+
+    return config
+
+
+def container_exists(container_id: str) -> bool:
+    """Check if a container exists."""
+    return os.path.exists(_container_config_path(container_id))
+
+
+def save_container_config(config: ContainerConfig) -> str:
+    """Save container configuration to disk."""
+    ensure_directories()
+
+    container_path = get_container_path(config.id)
+    os.makedirs(container_path, exist_ok=True)
+
+    config_path = _container_config_path(config.id)
+    with open(config_path, "w") as f:
+        json.dump(asdict(config), f, indent=2)
+
+    return config_path
+
+
+def load_container_config(container_id: str) -> Optional[ContainerConfig]:
+    """Load container configuration by full ID, prefix, or name."""
+    full_id = find_container_id(container_id)
+    if not full_id:
+        return None
+    return _load_container_config_by_id(full_id)
 
 
 def update_container_status(
@@ -192,31 +195,25 @@ def update_container_status(
     pid: Optional[int] = None,
     exit_code: Optional[int] = None,
 ) -> bool:
-    """
-    Update container status.
+    """Update container status."""
+    full_id = find_container_id(container_id)
+    if not full_id:
+        return False
 
-    Args:
-        container_id: Container ID
-        status: New status
-        pid: Process ID (for running containers)
-        exit_code: Exit code (for stopped containers)
-
-    Returns:
-        True if successful
-    """
-    config = load_container_config(container_id)
+    config = _load_container_config_by_id(full_id, refresh_state=False)
     if not config:
         return False
 
     config.status = status
 
-    if pid is not None:
-        config.pid = pid
-
-    if status == "running" and config.started_at is None:
-        config.started_at = time.time()
+    if status == "running":
+        if pid is not None:
+            config.pid = pid
+        if config.started_at is None:
+            config.started_at = time.time()
 
     if status == "stopped":
+        config.pid = None
         config.finished_at = time.time()
         if exit_code is not None:
             config.exit_code = exit_code
@@ -226,80 +223,53 @@ def update_container_status(
 
 
 def delete_container_config(container_id: str) -> bool:
-    """
-    Delete container configuration and directory.
-
-    Args:
-        container_id: Container ID
-
-    Returns:
-        True if successful
-    """
+    """Delete container configuration and directory."""
     import shutil
 
     full_id = find_container_id(container_id)
     if not full_id:
         return False
 
-    container_path = get_container_path(full_id)
-
     try:
-        shutil.rmtree(container_path)
+        shutil.rmtree(get_container_path(full_id))
         return True
     except (OSError, IOError):
         return False
 
 
 def list_containers(all_containers: bool = False) -> List[ContainerConfig]:
-    """
-    List all containers.
-
-    Args:
-        all_containers: If True, include stopped containers
-
-    Returns:
-        List of ContainerConfig instances
-    """
+    """List containers."""
     ensure_directories()
 
     containers = []
+    for container_id in _list_container_ids():
+        config = _load_container_config_by_id(container_id)
+        if not config:
+            continue
+        if all_containers or config.status == "running":
+            containers.append(config)
 
-    if not os.path.exists(CONTAINERS_PATH):
-        return containers
-
-    for container_id in os.listdir(CONTAINERS_PATH):
-        config = load_container_config(container_id)
-        if config:
-            if all_containers or config.status == "running":
-                containers.append(config)
-
-    # Sort by creation time
     containers.sort(key=lambda c: c.created_at, reverse=True)
-
     return containers
 
 
 def find_container_id(prefix: str) -> Optional[str]:
-    """
-    Find full container ID from prefix.
-
-    Args:
-        prefix: Container ID prefix or name
-
-    Returns:
-        Full container ID or None
-    """
-    if not os.path.exists(CONTAINERS_PATH):
+    """Find a full container ID from an ID prefix or container name."""
+    if not prefix:
         return None
 
-    for container_id in os.listdir(CONTAINERS_PATH):
-        # Match by ID prefix
+    if container_exists(prefix):
+        return prefix
+
+    container_ids = _list_container_ids()
+
+    for container_id in container_ids:
         if container_id.startswith(prefix):
             return container_id
 
-        # Match by name
-        config = load_container_config(container_id)
-        if config and config.name == prefix:
+    for container_id in container_ids:
+        data = _read_container_data(container_id)
+        if data and data.get("name") == prefix:
             return container_id
 
     return None
@@ -311,45 +281,30 @@ def get_container_log_path(container_id: str) -> str:
 
 
 class MetadataStore:
-    """
-    Metadata store manager.
-
-    Example:
-        store = MetadataStore()
-        config = store.create("rootfs", ["sh"])
-        store.update_status(config.id, "running", pid=1234)
-        containers = store.list()
-    """
+    """Metadata store manager."""
 
     def __init__(self):
         ensure_directories()
 
     def create(self, rootfs: str, command: List[str], **kwargs) -> ContainerConfig:
-        """Create a new container configuration."""
         config = ContainerConfig(rootfs=rootfs, command=command, **kwargs)
         save_container_config(config)
         return config
 
     def get(self, container_id: str) -> Optional[ContainerConfig]:
-        """Get container configuration."""
         return load_container_config(container_id)
 
     def update(self, config: ContainerConfig) -> None:
-        """Update container configuration."""
         save_container_config(config)
 
     def update_status(self, container_id: str, status: str, **kwargs) -> bool:
-        """Update container status."""
         return update_container_status(container_id, status, **kwargs)
 
     def delete(self, container_id: str) -> bool:
-        """Delete container."""
         return delete_container_config(container_id)
 
     def list(self, all_containers: bool = False) -> List[ContainerConfig]:
-        """List containers."""
         return list_containers(all_containers)
 
     def find(self, prefix: str) -> Optional[str]:
-        """Find container by ID prefix or name."""
         return find_container_id(prefix)

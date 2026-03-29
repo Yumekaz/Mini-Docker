@@ -1,29 +1,6 @@
 #!/usr/bin/env python3
 """
-Pod Support for Mini-Docker.
-
-Pods are groups of containers that share:
-- Network namespace (same IP, localhost communication)
-- IPC namespace (shared memory, semaphores)
-- UTS namespace (same hostname)
-
-Pod Architecture:
-    ┌───────────────────────────────────────────┐
-    │                   POD                      │
-    │  ┌─────────────┐   ┌─────────────┐        │
-    │  │ Container 1 │   │ Container 2 │        │
-    │  │   (app)     │   │  (sidecar)  │        │
-    │  └─────────────┘   └─────────────┘        │
-    │         │                 │               │
-    │         └────────┬────────┘               │
-    │                  │                        │
-    │  ┌───────────────┴───────────────────┐   │
-    │  │    Shared Namespaces:              │   │
-    │  │    - Network (10.0.0.X)            │   │
-    │  │    - IPC                           │   │
-    │  │    - UTS (pod-hostname)            │   │
-    │  └───────────────────────────────────┘   │
-    └───────────────────────────────────────────┘
+Pod support for Mini-Docker.
 """
 
 import json
@@ -38,6 +15,7 @@ from mini_docker.utils import (
     ensure_directories,
     generate_container_id,
     generate_container_name,
+    is_process_alive,
 )
 
 
@@ -53,23 +31,12 @@ class PodConfig:
 
     id: str = ""
     name: str = ""
-
-    # Containers in this pod
     containers: List[str] = field(default_factory=list)
-
-    # Shared namespace holder (infra container) PID
     infra_pid: Optional[int] = None
-
-    # Network configuration
     ip_address: Optional[str] = None
-
-    # Shared namespaces
     shared_namespaces: List[str] = field(default_factory=lambda: ["net", "ipc", "uts"])
-
-    # Pod hostname
     hostname: str = ""
-
-    # State
+    network: Optional[bool] = None
     status: str = "created"
     created_at: float = field(default_factory=time.time)
 
@@ -81,15 +48,70 @@ class PodConfig:
         if not self.hostname:
             self.hostname = self.name
 
+        if self.network is None:
+            self.network = "net" in self.shared_namespaces
+        elif self.network:
+            if "net" not in self.shared_namespaces:
+                self.shared_namespaces.insert(0, "net")
+        else:
+            self.shared_namespaces = [ns for ns in self.shared_namespaces if ns != "net"]
+
 
 def get_pod_path(pod_id: str) -> str:
     """Get path to pod directory."""
     return os.path.join(PODS_PATH, pod_id)
 
 
+def _pod_config_path(pod_id: str) -> str:
+    return os.path.join(get_pod_path(pod_id), "config.json")
+
+
+def _list_pod_ids() -> List[str]:
+    if not os.path.exists(PODS_PATH):
+        return []
+    return sorted(os.listdir(PODS_PATH))
+
+
+def _read_pod_data(pod_id: str) -> Optional[Dict]:
+    config_path = _pod_config_path(pod_id)
+    if not os.path.exists(config_path):
+        return None
+
+    try:
+        with open(config_path, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _refresh_pod_state(config: PodConfig) -> PodConfig:
+    if config.infra_pid and not is_process_alive(config.infra_pid):
+        config.infra_pid = None
+        config.status = "stopped"
+        save_pod_config(config)
+
+    return config
+
+
+def _load_pod_config_by_id(pod_id: str, refresh_state: bool = True) -> Optional[PodConfig]:
+    data = _read_pod_data(pod_id)
+    if not data:
+        return None
+
+    try:
+        config = PodConfig(**data)
+    except TypeError:
+        return None
+
+    if refresh_state:
+        config = _refresh_pod_state(config)
+
+    return config
+
+
 def pod_exists(pod_id: str) -> bool:
     """Check if pod exists."""
-    return os.path.exists(os.path.join(get_pod_path(pod_id), "config.json"))
+    return os.path.exists(_pod_config_path(pod_id))
 
 
 def save_pod_config(config: PodConfig) -> str:
@@ -99,8 +121,7 @@ def save_pod_config(config: PodConfig) -> str:
     pod_path = get_pod_path(config.id)
     os.makedirs(pod_path, exist_ok=True)
 
-    config_path = os.path.join(pod_path, "config.json")
-
+    config_path = _pod_config_path(config.id)
     with open(config_path, "w") as f:
         json.dump(asdict(config), f, indent=2)
 
@@ -108,22 +129,11 @@ def save_pod_config(config: PodConfig) -> str:
 
 
 def load_pod_config(pod_id: str) -> Optional[PodConfig]:
-    """Load pod configuration."""
+    """Load pod configuration by full ID, prefix, or name."""
     full_id = find_pod_id(pod_id)
     if not full_id:
         return None
-
-    config_path = os.path.join(get_pod_path(full_id), "config.json")
-
-    if not os.path.exists(config_path):
-        return None
-
-    try:
-        with open(config_path, "r") as f:
-            data = json.load(f)
-        return PodConfig(**data)
-    except (json.JSONDecodeError, TypeError):
-        return None
+    return _load_pod_config_by_id(full_id)
 
 
 def delete_pod_config(pod_id: str) -> bool:
@@ -134,7 +144,7 @@ def delete_pod_config(pod_id: str) -> bool:
     if not full_id:
         return False
 
-    config = load_pod_config(full_id)
+    config = _load_pod_config_by_id(full_id, refresh_state=False)
     if config and config.infra_pid:
         try:
             os.kill(config.infra_pid, signal.SIGTERM)
@@ -155,12 +165,8 @@ def list_pods() -> List[PodConfig]:
     ensure_directories()
 
     pods = []
-
-    if not os.path.exists(PODS_PATH):
-        return pods
-
-    for pod_id in os.listdir(PODS_PATH):
-        config = load_pod_config(pod_id)
+    for pod_id in _list_pod_ids():
+        config = _load_pod_config_by_id(pod_id)
         if config:
             pods.append(config)
 
@@ -170,15 +176,21 @@ def list_pods() -> List[PodConfig]:
 
 def find_pod_id(prefix: str) -> Optional[str]:
     """Find pod by ID prefix or name."""
-    if not os.path.exists(PODS_PATH):
+    if not prefix:
         return None
 
-    for pod_id in os.listdir(PODS_PATH):
+    if pod_exists(prefix):
+        return prefix
+
+    pod_ids = _list_pod_ids()
+
+    for pod_id in pod_ids:
         if pod_id.startswith(prefix):
             return pod_id
 
-        config = load_pod_config(pod_id)
-        if config and config.name == prefix:
+    for pod_id in pod_ids:
+        data = _read_pod_data(pod_id)
+        if data and data.get("name") == prefix:
             return pod_id
 
     return None
@@ -186,7 +198,11 @@ def find_pod_id(prefix: str) -> Optional[str]:
 
 def add_container_to_pod(pod_id: str, container_id: str) -> bool:
     """Add a container to a pod."""
-    config = load_pod_config(pod_id)
+    full_id = find_pod_id(pod_id)
+    if not full_id:
+        return False
+
+    config = _load_pod_config_by_id(full_id, refresh_state=False)
     if not config:
         return False
 
@@ -199,7 +215,11 @@ def add_container_to_pod(pod_id: str, container_id: str) -> bool:
 
 def remove_container_from_pod(pod_id: str, container_id: str) -> bool:
     """Remove a container from a pod."""
-    config = load_pod_config(pod_id)
+    full_id = find_pod_id(pod_id)
+    if not full_id:
+        return False
+
+    config = _load_pod_config_by_id(full_id, refresh_state=False)
     if not config:
         return False
 
@@ -211,85 +231,52 @@ def remove_container_from_pod(pod_id: str, container_id: str) -> bool:
 
 
 class PodManager:
-    """
-    Pod manager for Mini-Docker.
-
-    Example:
-        pods = PodManager()
-        pod = pods.create("my-pod")
-        pods.add_container(pod.id, container_id)
-    """
+    """Pod manager for Mini-Docker."""
 
     def __init__(self):
         ensure_directories()
 
     def create(self, name: Optional[str] = None, **kwargs) -> PodConfig:
-        """Create a new pod."""
         config = PodConfig(name=name or "", **kwargs)
         save_pod_config(config)
-
         self._start_infra_container(config)
-
         return config
 
     def _start_infra_container(self, config: PodConfig) -> None:
         """Start the infra container that holds shared namespaces."""
-        import subprocess
-
-        # Fork a process that just sleeps to hold namespaces
         pid = os.fork()
         if pid == 0:
-            # Child process - become the infra container
             try:
                 from mini_docker.namespaces import create_namespaces, sethostname
 
-                # Create shared namespaces
                 create_namespaces(config.shared_namespaces, hostname=config.hostname)
 
-                # Set hostname
                 if config.hostname:
                     try:
                         sethostname(config.hostname)
                     except Exception:
                         pass
 
-                # Sleep forever (will be killed when pod is deleted)
                 while True:
                     time.sleep(3600)
             except Exception:
                 os._exit(1)
         else:
-            # Parent - save infra PID
             config.infra_pid = pid
             config.status = "running"
             save_pod_config(config)
 
     def get(self, pod_id: str) -> Optional[PodConfig]:
-        """Get pod configuration."""
         return load_pod_config(pod_id)
 
     def update(self, config: PodConfig) -> None:
-        """Update pod configuration."""
         save_pod_config(config)
 
     def delete(self, pod_id: str, force: bool = False) -> bool:
-        """Delete a pod.
-
-        Args:
-            pod_id: Pod ID or name
-            force: Force deletion even if pod has running containers
-
-        Returns:
-            True if deleted successfully
-
-        Raises:
-            PodError: If pod has running containers and force is False
-        """
         config = load_pod_config(pod_id)
         if not config:
             return False
 
-        # Check if pod has running containers
         if config.containers and not force:
             raise PodError(
                 f"Pod has {len(config.containers)} containers. Use --force to remove."
@@ -298,19 +285,15 @@ class PodManager:
         return delete_pod_config(pod_id)
 
     def list(self) -> List[PodConfig]:
-        """List all pods."""
         return list_pods()
 
     def add_container(self, pod_id: str, container_id: str) -> bool:
-        """Add container to pod."""
         return add_container_to_pod(pod_id, container_id)
 
     def remove_container(self, pod_id: str, container_id: str) -> bool:
-        """Remove container from pod."""
         return remove_container_from_pod(pod_id, container_id)
 
     def set_infra_pid(self, pod_id: str, pid: int) -> bool:
-        """Set the infra container PID."""
         config = load_pod_config(pod_id)
         if not config:
             return False
@@ -319,18 +302,8 @@ class PodManager:
         return True
 
     def get_shared_ns_paths(self, pod_id: str) -> Dict[str, str]:
-        """Get paths to shared namespace files."""
         config = load_pod_config(pod_id)
         if not config or not config.infra_pid:
-            return {}
-
-        try:
-            os.kill(config.infra_pid, 0)
-        except OSError:
-            # Process is dead, clear infra_pid
-            config.infra_pid = None
-            config.status = "stopped"
-            save_pod_config(config)
             return {}
 
         paths = {}

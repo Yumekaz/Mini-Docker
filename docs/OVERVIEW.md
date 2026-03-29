@@ -303,7 +303,7 @@ These require `sudo` and unleash the full power of the Linux kernel.
 
 ```bash
 # Run with full networking and limits
-sudo python3 -m mini_docker run --cpu 50000 --memory 128 -d nginx
+sudo python3 -m mini_docker run --cpu 50 --memory 128 -d nginx
 
 # Manage network pods
 sudo python3 -m mini_docker pod create web-pod
