@@ -159,9 +159,8 @@ class Container:
             detach=detach,
             interactive=interactive,
             tty=tty,
-            network_enabled=(network and not pod_id) or bool(
-                pod and "net" in pod.shared_namespaces
-            ),
+            network_enabled=(network and not pod_id)
+            or bool(pod and "net" in pod.shared_namespaces),
             namespaces=namespaces,
         )
 
@@ -424,7 +423,11 @@ class Container:
                 setup_chroot_filesystem(rootfs_to_pivot)
 
             # Configure network inside container
-            if config.network_enabled and "net" in config.namespaces and config.network.ip:
+            if (
+                config.network_enabled
+                and "net" in config.namespaces
+                and config.network.ip
+            ):
                 try:
                     configure_container_network(config.network.ip)
                 except Exception as e:

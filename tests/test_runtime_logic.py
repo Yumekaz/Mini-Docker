@@ -41,7 +41,11 @@ def isolated_storage(tmp_path, monkeypatch):
 
 
 def test_container_lookup_by_prefix_and_name(isolated_storage):
-    from mini_docker.metadata import ContainerConfig, find_container_id, save_container_config
+    from mini_docker.metadata import (
+        ContainerConfig,
+        find_container_id,
+        save_container_config,
+    )
 
     alpha = ContainerConfig(
         id="a" * 12,

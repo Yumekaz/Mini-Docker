@@ -371,7 +371,9 @@ def parse_memory_limit(memory_str: str) -> int:
         raise ValueError(f"Invalid memory format: {memory_str}")
 
 
-def parse_cpu_limit_percent(cpu_percent: Optional[int], period_us: int = 100000) -> Optional[int]:
+def parse_cpu_limit_percent(
+    cpu_percent: Optional[int], period_us: int = 100000
+) -> Optional[int]:
     """Convert a CPU percentage to a cgroup quota value."""
     if cpu_percent is None:
         return None
