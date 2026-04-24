@@ -54,7 +54,9 @@ class PodConfig:
             if "net" not in self.shared_namespaces:
                 self.shared_namespaces.insert(0, "net")
         else:
-            self.shared_namespaces = [ns for ns in self.shared_namespaces if ns != "net"]
+            self.shared_namespaces = [
+                ns for ns in self.shared_namespaces if ns != "net"
+            ]
 
 
 def get_pod_path(pod_id: str) -> str:
@@ -93,7 +95,9 @@ def _refresh_pod_state(config: PodConfig) -> PodConfig:
     return config
 
 
-def _load_pod_config_by_id(pod_id: str, refresh_state: bool = True) -> Optional[PodConfig]:
+def _load_pod_config_by_id(
+    pod_id: str, refresh_state: bool = True
+) -> Optional[PodConfig]:
     data = _read_pod_data(pod_id)
     if not data:
         return None

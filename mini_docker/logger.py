@@ -20,7 +20,9 @@ from typing import Generator, Optional, TextIO
 
 from mini_docker.utils import get_container_path
 
-TIMESTAMP_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}) (?P<message>.*)$")
+TIMESTAMP_RE = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}) (?P<message>.*)$"
+)
 
 
 class ContainerLogger:
