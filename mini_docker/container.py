@@ -306,10 +306,23 @@ class Container:
 
         This sets up all isolation and executes the container command.
         """
+        # We must make sure the container directory exists before setting up the logger.
+        # This is because the logger tries to open a file inside this directory immediately.
+        import os
+        from mini_docker.metadata import get_container_path
+        os.makedirs(get_container_path(config.id), exist_ok=True)
+
         # Set up logging
         logger = ContainerLogger(config.id)
 
         try:
+            # Open the detached log file BEFORE we chroot, so we have the file descriptor ready.
+            detached_log_fd = None
+            if not attach:
+                detached_log_fd = os.open(
+                    logger.log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
+                )
+
             # Check if joining a pod
             pod_ns_paths = {}
             if config.pod_id:
@@ -476,18 +489,15 @@ class Container:
             logger.close()
 
             if not attach:
-                log_fd = os.open(
-                    logger.log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
-                )
-                os.dup2(log_fd, sys.stdout.fileno())
-                os.dup2(log_fd, sys.stderr.fileno())
+                if detached_log_fd is not None:
+                    os.dup2(detached_log_fd, sys.stdout.fileno())
+                    os.dup2(detached_log_fd, sys.stderr.fileno())
+                    os.close(detached_log_fd)
 
                 if not config.interactive:
                     devnull_fd = os.open(os.devnull, os.O_RDONLY)
                     os.dup2(devnull_fd, sys.stdin.fileno())
                     os.close(devnull_fd)
-
-                os.close(log_fd)
 
             # Replace process with command
             os.execvp(config.command[0], config.command)
