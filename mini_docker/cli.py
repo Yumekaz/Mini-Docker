@@ -70,6 +70,13 @@ def create_parser() -> argparse.ArgumentParser:
         "--pids-limit", type=int, help="Max number of processes (alias for --pids)"
     )
     run_parser.add_argument(
+        "--publish",
+        "-p",
+        action="append",
+        default=[],
+        help="Publish a container's port(s) to the host (format: hostPort:containerPort)",
+    )
+    run_parser.add_argument(
         "--env",
         "-e",
         action="append",
@@ -451,6 +458,30 @@ def cmd_run(args: argparse.Namespace) -> int:
     # Parse PIDs limit (support both --pids and --pids-limit)
     max_pids = args.pids or args.pids_limit
 
+    # Parse ports
+    ports = []
+    for p in args.publish:
+        # Expected format: "8080:80"
+        parts = p.split(":")
+        if len(parts) != 2:
+            print(
+                f"Error: Invalid port format '{p}'. Expected exactly two parts 'hostPort:containerPort'",
+                file=sys.stderr,
+            )
+            return 1
+
+        try:
+            int(parts[0])
+            int(parts[1])
+        except ValueError:
+            print(
+                f"Error: Invalid port format '{p}'. Ports must be integers.",
+                file=sys.stderr,
+            )
+            return 1
+
+        ports.append(p)
+
     # Parse volumes
     volumes = []
     for v in args.volume:
@@ -504,6 +535,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             detach=args.detach,
             interactive=args.interactive,
             tty=args.tty,
+            ports=ports,
         )
 
         print(f"Created container: {config.id[:12]}")

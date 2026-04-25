@@ -32,6 +32,7 @@ class NetworkConfig:
     veth_host: Optional[str] = None
     veth_container: Optional[str] = None
     bridge: str = "mini-docker0"
+    ports: List[str] = field(default_factory=list)
 
 
 @dataclass

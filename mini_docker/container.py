@@ -98,6 +98,7 @@ class Container:
         interactive: bool = False,
         tty: bool = False,
         detach: bool = False,
+        ports: Optional[List[str]] = None,
     ) -> ContainerConfig:
         """
         Create a new container.
@@ -163,6 +164,8 @@ class Container:
             or bool(pod and "net" in pod.shared_namespaces),
             namespaces=namespaces,
         )
+        if ports:
+            config.network.ports = ports
 
         # Set up overlay paths if using overlay
         if use_overlay:
@@ -274,6 +277,17 @@ class Container:
                         config.network.veth_host = veth_host
                         config.network.veth_container = veth_container
                         save_container_config(config)
+
+                    # Setup port forwarding
+                    if config and config.network.ports:
+                        from mini_docker.network import setup_port_forwarding
+
+                        for port_mapping in config.network.ports:
+                            host_port_str, container_port_str = port_mapping.split(":")
+                            setup_port_forwarding(
+                                int(host_port_str), int(container_port_str), ip
+                            )
+
                 except Exception as e:
                     print(f"Warning: Network setup failed: {e}", file=sys.stderr)
 
@@ -310,6 +324,7 @@ class Container:
         # This is because the logger tries to open a file inside this directory immediately.
         import os
         from mini_docker.metadata import get_container_path
+
         os.makedirs(get_container_path(config.id), exist_ok=True)
 
         # Set up logging
@@ -637,6 +652,15 @@ class Container:
 
         # Clean up networking
         try:
+            if config.network_enabled and config.network.ports and config.network.ip:
+                from mini_docker.network import remove_port_forwarding
+
+                for port_mapping in config.network.ports:
+                    host_port_str, container_port_str = port_mapping.split(":")
+                    remove_port_forwarding(
+                        int(host_port_str), int(container_port_str), config.network.ip
+                    )
+
             network = Network(config.id)
             network.cleanup()
         except Exception as e:
