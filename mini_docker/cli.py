@@ -324,6 +324,18 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     # =========================================================================
+    # daemon command (NEW)
+    # =========================================================================
+    daemon_parser = subparsers.add_parser(
+        "daemon", help="Start the Mini-Docker API daemon"
+    )
+    daemon_parser.add_argument(
+        "--socket",
+        "-s",
+        help="Path to the Unix socket (default: /var/run/mini-docker.sock or user specific)",
+    )
+
+    # =========================================================================
     # cleanup command (NEW)
     # =========================================================================
     cleanup_parser = subparsers.add_parser("cleanup", help="Clean up unused resources")
@@ -1070,6 +1082,20 @@ def cmd_version(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_daemon(args: argparse.Namespace) -> int:
+    """Handle daemon command."""
+    from mini_docker.daemon import run_daemon
+    from mini_docker.utils import DEFAULT_SOCKET_PATH
+
+    socket_path = args.socket or DEFAULT_SOCKET_PATH
+    try:
+        run_daemon(socket_path=socket_path)
+        return 0
+    except Exception as e:
+        print(f"Error starting daemon: {e}", file=sys.stderr)
+        return 1
+
+
 def cmd_cleanup(args: argparse.Namespace) -> int:
     """Handle cleanup command - remove unused resources."""
     from mini_docker.container import Container
@@ -1164,6 +1190,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "rmi": cmd_rmi,
         "info": cmd_info,
         "version": cmd_version,
+        "daemon": cmd_daemon,
         "cleanup": cmd_cleanup,
     }
 

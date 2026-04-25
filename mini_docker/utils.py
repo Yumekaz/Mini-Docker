@@ -96,6 +96,8 @@ else:
         suffix = str(_EFFECTIVE_UID) if _EFFECTIVE_UID is not None else "user"
         RUN_PATH = os.path.join(tempfile.gettempdir(), f"mini-docker-{suffix}")
 
+DEFAULT_SOCKET_PATH = os.path.join(RUN_PATH, "mini-docker.sock")
+
 # Adjectives for Docker-style names
 ADJECTIVES = [
     "admiring",
