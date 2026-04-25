@@ -188,6 +188,69 @@ def attach_to_bridge(veth_name: str, bridge: str = BRIDGE_NAME) -> None:
         raise NetworkError(f"Failed to attach to bridge: {e}")
 
 
+def setup_port_forwarding(
+    host_port: int, container_port: int, container_ip: str
+) -> None:
+    """
+    Set up port forwarding from host to container using iptables.
+    """
+    try:
+        subprocess.run(
+            [
+                "iptables",
+                "-t",
+                "nat",
+                "-A",
+                "PREROUTING",
+                "-p",
+                "tcp",
+                "--dport",
+                str(host_port),
+                "-j",
+                "DNAT",
+                "--to-destination",
+                f"{container_ip}:{container_port}",
+            ],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as e:
+        print(
+            f"Warning: Failed to setup port forwarding {host_port}->{container_port}: {e.stderr.decode()}",
+            file=sys.stderr,
+        )
+
+
+def remove_port_forwarding(
+    host_port: int, container_port: int, container_ip: str
+) -> None:
+    """
+    Remove port forwarding rule for a container.
+    """
+    try:
+        subprocess.run(
+            [
+                "iptables",
+                "-t",
+                "nat",
+                "-D",
+                "PREROUTING",
+                "-p",
+                "tcp",
+                "--dport",
+                str(host_port),
+                "-j",
+                "DNAT",
+                "--to-destination",
+                f"{container_ip}:{container_port}",
+            ],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError:
+        pass
+
+
 def setup_nat(subnet: str = BRIDGE_SUBNET) -> None:
     """
     Set up NAT (Network Address Translation) for containers.

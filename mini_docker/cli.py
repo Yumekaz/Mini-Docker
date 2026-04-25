@@ -70,6 +70,13 @@ def create_parser() -> argparse.ArgumentParser:
         "--pids-limit", type=int, help="Max number of processes (alias for --pids)"
     )
     run_parser.add_argument(
+        "--publish",
+        "-p",
+        action="append",
+        default=[],
+        help="Publish a container's port(s) to the host (format: hostPort:containerPort)",
+    )
+    run_parser.add_argument(
         "--env",
         "-e",
         action="append",
@@ -317,6 +324,18 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     # =========================================================================
+    # daemon command (NEW)
+    # =========================================================================
+    daemon_parser = subparsers.add_parser(
+        "daemon", help="Start the Mini-Docker API daemon"
+    )
+    daemon_parser.add_argument(
+        "--socket",
+        "-s",
+        help="Path to the Unix socket (default: /var/run/mini-docker.sock or user specific)",
+    )
+
+    # =========================================================================
     # cleanup command (NEW)
     # =========================================================================
     cleanup_parser = subparsers.add_parser("cleanup", help="Clean up unused resources")
@@ -451,6 +470,30 @@ def cmd_run(args: argparse.Namespace) -> int:
     # Parse PIDs limit (support both --pids and --pids-limit)
     max_pids = args.pids or args.pids_limit
 
+    # Parse ports
+    ports = []
+    for p in args.publish:
+        # Expected format: "8080:80"
+        parts = p.split(":")
+        if len(parts) != 2:
+            print(
+                f"Error: Invalid port format '{p}'. Expected exactly two parts 'hostPort:containerPort'",
+                file=sys.stderr,
+            )
+            return 1
+
+        try:
+            int(parts[0])
+            int(parts[1])
+        except ValueError:
+            print(
+                f"Error: Invalid port format '{p}'. Ports must be integers.",
+                file=sys.stderr,
+            )
+            return 1
+
+        ports.append(p)
+
     # Parse volumes
     volumes = []
     for v in args.volume:
@@ -504,6 +547,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             detach=args.detach,
             interactive=args.interactive,
             tty=args.tty,
+            ports=ports,
         )
 
         print(f"Created container: {config.id[:12]}")
@@ -1038,6 +1082,20 @@ def cmd_version(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_daemon(args: argparse.Namespace) -> int:
+    """Handle daemon command."""
+    from mini_docker.daemon import run_daemon
+    from mini_docker.utils import DEFAULT_SOCKET_PATH
+
+    socket_path = args.socket or DEFAULT_SOCKET_PATH
+    try:
+        run_daemon(socket_path=socket_path)
+        return 0
+    except Exception as e:
+        print(f"Error starting daemon: {e}", file=sys.stderr)
+        return 1
+
+
 def cmd_cleanup(args: argparse.Namespace) -> int:
     """Handle cleanup command - remove unused resources."""
     from mini_docker.container import Container
@@ -1132,6 +1190,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "rmi": cmd_rmi,
         "info": cmd_info,
         "version": cmd_version,
+        "daemon": cmd_daemon,
         "cleanup": cmd_cleanup,
     }
 
