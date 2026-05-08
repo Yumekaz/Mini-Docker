@@ -36,6 +36,7 @@ Network Architecture:
 
 import os
 import subprocess
+import sys
 from typing import Optional, Tuple
 
 from mini_docker.utils import generate_mac_address, get_available_ip
@@ -105,7 +106,7 @@ def create_bridge(name: str = BRIDGE_NAME, ip: str = BRIDGE_IP) -> None:
 
     try:
         # Create bridge device
-        run_ip_command(["link", "add", "name", name, "type", "bridge"])
+        run_ip_command(["link", "add", "name", name, "type", "bridge"]) 
 
         # Assign IP address
         run_ip_command(["addr", "add", f"{ip}/24", "dev", name])
