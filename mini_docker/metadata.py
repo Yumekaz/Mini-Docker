@@ -138,9 +138,24 @@ def _refresh_container_state(config: ContainerConfig) -> ContainerConfig:
 
     if not is_process_alive(config.pid):
         config.status = "stopped"
-        config.pid = None
         if config.finished_at is None:
             config.finished_at = time.time()
+
+        # Try to reap the zombie to get the exit code if possible.
+        # This will only succeed if the caller is the direct parent process.
+        if config.pid and config.exit_code is None:
+            try:
+                import os
+
+                pid, status = os.waitpid(config.pid, os.WNOHANG)
+                if pid != 0:
+                    config.exit_code = (
+                        os.WEXITSTATUS(status) if os.WIFEXITED(status) else -1
+                    )
+            except Exception:
+                pass
+
+        config.pid = None
         save_container_config(config)
 
     return config

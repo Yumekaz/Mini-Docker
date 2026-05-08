@@ -138,6 +138,18 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                 self.send_error_response(500, str(e))
             return
 
+        elif path.startswith("/containers/") and path.endswith("/restart"):
+            container_id = path.split("/")[2]
+            try:
+                pid = self.container_manager.restart(container_id)
+                self.send_json_response(
+                    204,
+                    {"message": f"Restarted container {container_id} with PID {pid}"},
+                )
+            except ContainerError as e:
+                self.send_error_response(500, str(e))
+            return
+
         elif path.startswith("/containers/") and path.endswith("/stop"):
             container_id = path.split("/")[2]
             try:
