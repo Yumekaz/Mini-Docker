@@ -522,6 +522,27 @@ class Container:
             logger.close()
             raise
 
+    def restart(self, container_id: str, timeout: int = 10) -> int:
+        """
+        Restart a container.
+
+        Args:
+            container_id: Container ID
+            timeout: Seconds to wait for graceful stop before SIGKILL
+
+        Returns:
+            New Container PID
+        """
+        config = load_container_config(container_id)
+        if not config:
+            raise ContainerError(f"Container not found: {container_id}")
+
+        if config.status == "running":
+            self.stop(container_id, timeout=timeout)
+
+        # We start it detached by default when restarting
+        return self.start(container_id, attach=False)
+
     def stop(self, container_id: str, timeout: int = 10) -> bool:
         """
         Stop a running container.

@@ -204,6 +204,16 @@ def create_parser() -> argparse.ArgumentParser:
     stop_parser.add_argument(
         "--time", "-t", type=int, default=10, help="Seconds to wait before SIGKILL"
     )
+
+    # restart command
+    # =========================================================================
+    restart_parser = subparsers.add_parser("restart", help="Restart a container")
+    restart_parser.add_argument(
+        "container", nargs="+", help="Container ID(s) or name(s)"
+    )
+    restart_parser.add_argument(
+        "--time", "-t", type=int, default=10, help="Seconds to wait before SIGKILL"
+    )
     stop_parser.add_argument(
         "--force", "-f", action="store_true", help="Force stop (SIGKILL immediately)"
     )
@@ -756,6 +766,24 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_restart(args: argparse.Namespace) -> int:
+    """Handle restart command."""
+    from mini_docker.container import Container, ContainerError
+
+    container = Container()
+    exit_code = 0
+
+    for c in args.container:
+        try:
+            pid = container.restart(c, timeout=args.time)
+            print(f"Restarted container {c} with PID {pid}")
+        except ContainerError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            exit_code = 1
+
+    return exit_code
+
+
 def cmd_stop(args: argparse.Namespace) -> int:
     """Handle stop command."""
     from mini_docker.container import Container, ContainerError
@@ -1183,6 +1211,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "logs": cmd_logs,
         "inspect": cmd_inspect,
         "stop": cmd_stop,
+        "restart": cmd_restart,
         "rm": cmd_rm,
         "pod": cmd_pod,
         "build": cmd_build,
