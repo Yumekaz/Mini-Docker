@@ -137,15 +137,8 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
             try:
                 # Daemon API calls must never attach to container stdio, otherwise
                 # the request thread can block waiting on container I/O.
-<<<<<<< HEAD
-                pid = self.container_manager.start(container_id, attach=False)
-                self.send_json_response(
-                    204, {"message": f"Started container {container_id} with PID {pid}"}
-                )
-=======
                 self.container_manager.start(container_id, attach=False)
                 self.send_empty_response(204)
->>>>>>> ad13ff7 (Add restart regression tests for network metadata reset behavior)
             except ContainerError as e:
                 self.send_error_response(500, str(e))
             return
