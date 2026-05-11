@@ -52,20 +52,30 @@ class ContainerError(Exception):
     """Base exception for container operations."""
 
 
-class ContainerNotFoundError(ContainerError):
-    """Raised when a referenced container (or related resource) does not exist."""
+class NotFoundError(ContainerError):
+    """Raised when a referenced resource does not exist."""
 
 
-class ContainerInvalidStateError(ContainerError):
-    """Raised when a lifecycle operation is invalid in the current state."""
+class ConflictError(ContainerError):
+    """Raised when requested operation conflicts with current state."""
 
 
-class ContainerInvalidRequestError(ContainerError):
+class ValidationError(ContainerError):
     """Raised when request parameters are invalid or unsupported."""
+
+
+class AmbiguousReferenceError(ContainerError):
+    """Raised when a container reference resolves to more than one container."""
 
 
 class ContainerInternalError(ContainerError):
     """Raised when an unexpected internal runtime failure occurs."""
+
+
+# Backward-compatible aliases
+ContainerNotFoundError = NotFoundError
+ContainerInvalidStateError = ConflictError
+ContainerInvalidRequestError = ValidationError
 
 
 class Container:
@@ -89,6 +99,31 @@ class Container:
         self.store = MetadataStore()
         self.pods = PodManager()
         ensure_directories()
+
+    def _resolve_container(self, container_ref: str) -> ContainerConfig:
+        """Resolve a container ID/name/prefix and return a unique config."""
+        if not container_ref:
+            raise ValidationError("Container reference is required")
+
+        containers = self.store.list(all_containers=True)
+        exact_matches = [
+            cfg for cfg in containers if cfg.id == container_ref or cfg.name == container_ref
+        ]
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+        if len(exact_matches) > 1:
+            raise AmbiguousReferenceError(
+                f"Container reference '{container_ref}' is ambiguous"
+            )
+
+        prefix_matches = [cfg for cfg in containers if cfg.id.startswith(container_ref)]
+        if len(prefix_matches) == 1:
+            return prefix_matches[0]
+        if len(prefix_matches) > 1:
+            raise AmbiguousReferenceError(
+                f"Container reference '{container_ref}' matches multiple containers"
+            )
+        raise NotFoundError(f"Container not found: {container_ref}")
 
     def create(
         self,
@@ -137,14 +172,14 @@ class Container:
         # Validate rootfs
         rootfs = os.path.abspath(rootfs)
         if not os.path.isdir(rootfs):
-            raise ContainerInvalidRequestError(f"Rootfs not found: {rootfs}")
+            raise ValidationError(f"Rootfs not found: {rootfs}")
 
         # Create configuration
         from mini_docker.metadata import ResourceLimits
 
         pod = load_pod_config(pod_id) if pod_id else None
         if pod_id and not pod:
-            raise ContainerNotFoundError(f"Pod not found: {pod_id}")
+            raise NotFoundError(f"Pod not found: {pod_id}")
 
         namespaces = ["pid", "uts", "mnt", "ipc"]
         if (pod and "net" in pod.shared_namespaces) or (network and not pod_id):
@@ -204,19 +239,17 @@ class Container:
         Returns:
             Container PID
         """
-        config = load_container_config(container_id)
-        if not config:
-            raise ContainerNotFoundError(f"Container not found: {container_id}")
+        config = self._resolve_container(container_id)
 
         if attach is None:
             attach = not config.detach
 
         if config.status == "running":
-            raise ContainerInvalidStateError(f"Container already running: {container_id}")
+            raise ConflictError(f"Container already running: {container_id}")
 
         # Check permissions
         if not config.rootless and not check_root():
-            raise ContainerInvalidRequestError(
+            raise ValidationError(
                 "Root privileges required (use --rootless for unprivileged mode)"
             )
 
@@ -556,9 +589,7 @@ class Container:
         Returns:
             New Container PID
         """
-        config = load_container_config(container_id)
-        if not config:
-            raise ContainerNotFoundError(f"Container not found: {container_id}")
+        config = self._resolve_container(container_id)
 
         if config.status == "running":
             self.stop(container_id, timeout=timeout)
@@ -586,12 +617,10 @@ class Container:
         Returns:
             True if stopped successfully
         """
-        config = load_container_config(container_id)
-        if not config:
-            raise ContainerNotFoundError(f"Container not found: {container_id}")
+        config = self._resolve_container(container_id)
 
         if config.status != "running":
-            raise ContainerInvalidStateError(
+            raise ConflictError(
                 f"Container not running: {container_id}"
             )
 
@@ -674,15 +703,13 @@ class Container:
         Returns:
             True if removed successfully
         """
-        config = load_container_config(container_id)
-        if not config:
-            raise ContainerNotFoundError(f"Container not found: {container_id}")
+        config = self._resolve_container(container_id)
 
         if config.status == "running":
             if force:
                 self.stop(container_id, timeout=5)
             else:
-                raise ContainerInvalidStateError(
+                raise ConflictError(
                     f"Container is running. Stop first or use force=True"
                 )
 
@@ -833,7 +860,7 @@ class Container:
 
     def inspect(self, container_id: str) -> Optional[ContainerConfig]:
         """Get container details."""
-        return load_container_config(container_id)
+        return self._resolve_container(container_id)
 
     def logs(
         self,

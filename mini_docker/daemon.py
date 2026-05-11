@@ -15,12 +15,13 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any, Dict
 
 from mini_docker.container import (
+    AmbiguousReferenceError,
+    ConflictError,
     Container,
     ContainerError,
     ContainerInternalError,
-    ContainerInvalidRequestError,
-    ContainerInvalidStateError,
-    ContainerNotFoundError,
+    NotFoundError,
+    ValidationError,
 )
 from mini_docker.metadata import asdict
 from mini_docker.utils import DEFAULT_SOCKET_PATH, ensure_directories
@@ -65,11 +66,13 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
 
     def map_container_error(self, error: ContainerError) -> int:
         """Map typed container errors to HTTP status codes."""
-        if isinstance(error, ContainerNotFoundError):
+        if isinstance(error, NotFoundError):
             return 404
-        if isinstance(error, ContainerInvalidRequestError):
+        if isinstance(error, ValidationError):
             return 400
-        if isinstance(error, ContainerInvalidStateError):
+        if isinstance(error, ConflictError):
+            return 409
+        if isinstance(error, AmbiguousReferenceError):
             return 409
         if isinstance(error, ContainerInternalError):
             return 500
@@ -99,11 +102,13 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
         elif path.startswith("/containers/") and path.endswith("/json"):
             # Inspect container
             container_id = path.split("/")[2]
-            config = self.container_manager.inspect(container_id)
-            if config:
+            try:
+                config = self.container_manager.inspect(container_id)
                 self.send_json_response(200, asdict(config))
-            else:
-                self.send_error_response(404, "Container not found")
+            except ContainerError as e:
+                self.send_error_response(self.map_container_error(e), str(e))
+            except Exception as e:
+                self.send_error_response(500, str(e))
             return
 
         elif path == "/info":
