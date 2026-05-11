@@ -270,9 +270,27 @@ class Container:
                 try:
                     setup_user_namespace(pid)
                 except Exception as e:
-                    print(
-                        f"Warning: Failed to setup user namespace: {e}", file=sys.stderr
-                    )
+                    # Rootless startup cannot continue safely without user namespace mapping.
+                    # Terminate child, reap it to avoid zombies, and keep status non-running.
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except OSError:
+                        pass
+
+                    try:
+                        os.waitpid(pid, 0)
+                    except OSError:
+                        pass
+
+                    os.close(p2c_w)
+                    os.close(c2p_r)
+                    update_container_status(container_id, "stopped", exit_code=1)
+                    raise ContainerError(
+                        "Rootless startup failed: unable to configure user namespace "
+                        f"for pid {pid}: {e}. Verify subordinate ID mappings in "
+                        "/etc/subuid and /etc/subgid, and ensure user namespaces "
+                        "are enabled in the kernel (CONFIG_USER_NS)."
+                    ) from e
 
             # Set up networking from parent after the child entered its net namespace.
             if (
