@@ -49,9 +49,23 @@ from mini_docker.utils import check_root, ensure_directories, get_overlay_paths
 
 
 class ContainerError(Exception):
-    """Exception raised for container operations."""
+    """Base exception for container operations."""
 
-    pass
+
+class ContainerNotFoundError(ContainerError):
+    """Raised when a referenced container (or related resource) does not exist."""
+
+
+class ContainerInvalidStateError(ContainerError):
+    """Raised when a lifecycle operation is invalid in the current state."""
+
+
+class ContainerInvalidRequestError(ContainerError):
+    """Raised when request parameters are invalid or unsupported."""
+
+
+class ContainerInternalError(ContainerError):
+    """Raised when an unexpected internal runtime failure occurs."""
 
 
 class Container:
@@ -123,14 +137,14 @@ class Container:
         # Validate rootfs
         rootfs = os.path.abspath(rootfs)
         if not os.path.isdir(rootfs):
-            raise ContainerError(f"Rootfs not found: {rootfs}")
+            raise ContainerInvalidRequestError(f"Rootfs not found: {rootfs}")
 
         # Create configuration
         from mini_docker.metadata import ResourceLimits
 
         pod = load_pod_config(pod_id) if pod_id else None
         if pod_id and not pod:
-            raise ContainerError(f"Pod not found: {pod_id}")
+            raise ContainerNotFoundError(f"Pod not found: {pod_id}")
 
         namespaces = ["pid", "uts", "mnt", "ipc"]
         if (pod and "net" in pod.shared_namespaces) or (network and not pod_id):
@@ -192,17 +206,17 @@ class Container:
         """
         config = load_container_config(container_id)
         if not config:
-            raise ContainerError(f"Container not found: {container_id}")
+            raise ContainerNotFoundError(f"Container not found: {container_id}")
 
         if attach is None:
             attach = not config.detach
 
         if config.status == "running":
-            raise ContainerError(f"Container already running: {container_id}")
+            raise ContainerInvalidStateError(f"Container already running: {container_id}")
 
         # Check permissions
         if not config.rootless and not check_root():
-            raise ContainerError(
+            raise ContainerInvalidRequestError(
                 "Root privileges required (use --rootless for unprivileged mode)"
             )
 
@@ -249,7 +263,7 @@ class Container:
                     os.waitpid(pid, 0)
                 except OSError:
                     pass
-                raise ContainerError("Container failed during early startup")
+                raise ContainerInternalError("Container failed during early startup")
 
             # Setup user namespace for rootless
             if config.rootless:
@@ -411,7 +425,7 @@ class Container:
                     os.close(sync_write)
 
                 if proceed != b"X":
-                    raise ContainerError("Parent process failed during startup")
+                    raise ContainerInternalError("Parent process failed during startup")
 
             refreshed_config = load_container_config(config.id)
             if refreshed_config:
@@ -544,7 +558,7 @@ class Container:
         """
         config = load_container_config(container_id)
         if not config:
-            raise ContainerError(f"Container not found: {container_id}")
+            raise ContainerNotFoundError(f"Container not found: {container_id}")
 
         if config.status == "running":
             self.stop(container_id, timeout=timeout)
@@ -574,10 +588,12 @@ class Container:
         """
         config = load_container_config(container_id)
         if not config:
-            raise ContainerError(f"Container not found: {container_id}")
+            raise ContainerNotFoundError(f"Container not found: {container_id}")
 
         if config.status != "running":
-            return True
+            raise ContainerInvalidStateError(
+                f"Container not running: {container_id}"
+            )
 
         if not config.pid:
             update_container_status(container_id, "stopped")
@@ -642,7 +658,7 @@ class Container:
             if e.errno == errno.ESRCH:  # No such process
                 update_container_status(container_id, "stopped")
                 return True
-            raise ContainerError(f"Failed to stop container: {e}")
+            raise ContainerInternalError(f"Failed to stop container: {e}")
 
     def remove(
         self, container_id: str, force: bool = False, remove_volumes: bool = False
@@ -660,13 +676,13 @@ class Container:
         """
         config = load_container_config(container_id)
         if not config:
-            raise ContainerError(f"Container not found: {container_id}")
+            raise ContainerNotFoundError(f"Container not found: {container_id}")
 
         if config.status == "running":
             if force:
                 self.stop(container_id, timeout=5)
             else:
-                raise ContainerError(
+                raise ContainerInvalidStateError(
                     f"Container is running. Stop first or use force=True"
                 )
 
@@ -759,7 +775,7 @@ class Container:
         """
         config = load_container_config(container_id)
         if not config:
-            raise ContainerError(f"Container not found: {container_id}")
+            raise ContainerNotFoundError(f"Container not found: {container_id}")
 
         if config.status != "running" or not config.pid:
             raise ContainerError(f"Container not running: {container_id}")
@@ -838,6 +854,6 @@ class Container:
 
         config = load_container_config(container_id)
         if not config:
-            raise ContainerError(f"Container not found: {container_id}")
+            raise ContainerNotFoundError(f"Container not found: {container_id}")
 
         print_logs(config.id, follow=follow, tail=tail, timestamps=timestamps)
