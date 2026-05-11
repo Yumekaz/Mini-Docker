@@ -130,7 +130,9 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
         elif path.startswith("/containers/") and path.endswith("/start"):
             container_id = path.split("/")[2]
             try:
-                pid = self.container_manager.start(container_id)
+                # Daemon API calls must never attach to container stdio, otherwise
+                # the request thread can block waiting on container I/O.
+                pid = self.container_manager.start(container_id, attach=False)
                 self.send_json_response(
                     204, {"message": f"Started container {container_id} with PID {pid}"}
                 )

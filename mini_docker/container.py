@@ -330,9 +330,9 @@ class Container:
         # Set up logging
         logger = ContainerLogger(config.id)
 
+        detached_log_fd = None
         try:
             # Open the detached log file BEFORE we chroot, so we have the file descriptor ready.
-            detached_log_fd = None
             if not attach:
                 detached_log_fd = os.open(
                     logger.log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644
@@ -521,6 +521,14 @@ class Container:
             logger.write(f"Container setup failed: {e}\n")
             logger.close()
             raise
+        finally:
+            # If startup failed before stdio redirection/exec, make sure this fd
+            # doesn't leak in the container supervisor process.
+            if detached_log_fd is not None:
+                try:
+                    os.close(detached_log_fd)
+                except OSError:
+                    pass
 
     def restart(self, container_id: str, timeout: int = 10) -> int:
         """
@@ -539,6 +547,15 @@ class Container:
 
         if config.status == "running":
             self.stop(container_id, timeout=timeout)
+
+        # Reset networking runtime metadata before a fresh start so networking
+        # setup behaves like a full lifecycle reboot.
+        refreshed_config = load_container_config(container_id)
+        if refreshed_config and refreshed_config.network:
+            refreshed_config.network.ip = None
+            refreshed_config.network.veth_host = None
+            refreshed_config.network.veth_container = None
+            save_container_config(refreshed_config)
 
         # We start it detached by default when restarting
         return self.start(container_id, attach=False)
