@@ -14,7 +14,14 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler
 from typing import Any, Dict
 
-from mini_docker.container import Container, ContainerError
+from mini_docker.container import (
+    Container,
+    ContainerError,
+    ContainerInternalError,
+    ContainerInvalidRequestError,
+    ContainerInvalidStateError,
+    ContainerNotFoundError,
+)
 from mini_docker.metadata import asdict
 from mini_docker.utils import DEFAULT_SOCKET_PATH, ensure_directories
 
@@ -54,6 +61,19 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
     def send_error_response(self, status_code: int, message: str):
         """Helper to send error responses."""
         self.send_json_response(status_code, {"error": message})
+
+
+    def map_container_error(self, error: ContainerError) -> int:
+        """Map typed container errors to HTTP status codes."""
+        if isinstance(error, ContainerNotFoundError):
+            return 404
+        if isinstance(error, ContainerInvalidRequestError):
+            return 400
+        if isinstance(error, ContainerInvalidStateError):
+            return 409
+        if isinstance(error, ContainerInternalError):
+            return 500
+        return 500
 
     def parse_body(self) -> Dict[str, Any]:
         """Helper to parse JSON request bodies."""
@@ -128,6 +148,8 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                     detach=True,  # Daemon creations are inherently detached from the socket
                 )
                 self.send_json_response(201, {"Id": config.id})
+            except ContainerError as e:
+                self.send_error_response(self.map_container_error(e), str(e))
             except Exception as e:
                 self.send_error_response(500, str(e))
             return
@@ -140,6 +162,8 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                 self.container_manager.start(container_id, attach=False)
                 self.send_empty_response(204)
             except ContainerError as e:
+                self.send_error_response(self.map_container_error(e), str(e))
+            except Exception as e:
                 self.send_error_response(500, str(e))
             return
 
@@ -149,6 +173,8 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                 self.container_manager.restart(container_id)
                 self.send_empty_response(204)
             except ContainerError as e:
+                self.send_error_response(self.map_container_error(e), str(e))
+            except Exception as e:
                 self.send_error_response(500, str(e))
             return
 
@@ -158,6 +184,8 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                 self.container_manager.stop(container_id)
                 self.send_empty_response(204)
             except ContainerError as e:
+                self.send_error_response(self.map_container_error(e), str(e))
+            except Exception as e:
                 self.send_error_response(500, str(e))
             return
 
@@ -183,6 +211,8 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                 else:
                     self.send_error_response(500, "Failed to remove container")
             except ContainerError as e:
+                self.send_error_response(self.map_container_error(e), str(e))
+            except Exception as e:
                 self.send_error_response(500, str(e))
             return
 
