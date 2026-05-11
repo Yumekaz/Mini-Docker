@@ -52,6 +52,47 @@ import tempfile
 from typing import Optional, Tuple
 
 
+def validate_port_mapping(port_mapping: str) -> Tuple[int, int]:
+    """
+    Validate and parse a port mapping in the form ``hostPort:containerPort``.
+
+    Args:
+        port_mapping: Port mapping string.
+
+    Returns:
+        A tuple of ``(host_port, container_port)`` as integers.
+
+    Raises:
+        ValueError: If the mapping format is invalid or ports are out of range.
+    """
+    if not isinstance(port_mapping, str):
+        raise ValueError(
+            "Port mapping must be a string in format 'hostPort:containerPort'"
+        )
+
+    parts = port_mapping.split(":")
+    if len(parts) != 2:
+        raise ValueError(
+            "Invalid port format. Expected exactly 'hostPort:containerPort'"
+        )
+
+    host_token, container_token = parts[0].strip(), parts[1].strip()
+    if not host_token or not container_token:
+        raise ValueError("Port mapping tokens cannot be empty")
+
+    try:
+        host_port = int(host_token)
+        container_port = int(container_token)
+    except ValueError as exc:
+        raise ValueError("Ports must be integers") from exc
+
+    for port_value, label in ((host_port, "HostPort"), (container_port, "ContainerPort")):
+        if port_value < 1 or port_value > 65535:
+            raise ValueError(f"{label} must be in range 1-65535")
+
+    return host_port, container_port
+
+
 def _get_effective_uid() -> Optional[int]:
     """Return the current effective UID when available."""
     geteuid = getattr(os, "geteuid", None)

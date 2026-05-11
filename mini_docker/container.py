@@ -45,7 +45,12 @@ from mini_docker.namespaces import (
 from mini_docker.network import Network, configure_container_network
 from mini_docker.pod import PodManager, load_pod_config
 from mini_docker.seccomp import Seccomp
-from mini_docker.utils import check_root, ensure_directories, get_overlay_paths
+from mini_docker.utils import (
+    check_root,
+    ensure_directories,
+    get_overlay_paths,
+    validate_port_mapping,
+)
 
 
 class ContainerError(Exception):
@@ -179,6 +184,13 @@ class Container:
             namespaces=namespaces,
         )
         if ports:
+            for port_mapping in ports:
+                try:
+                    validate_port_mapping(port_mapping)
+                except ValueError as exc:
+                    raise ContainerInvalidRequestError(
+                        f"Invalid port mapping '{port_mapping}': {exc}"
+                    ) from exc
             config.network.ports = ports
 
         # Set up overlay paths if using overlay
@@ -297,9 +309,11 @@ class Container:
                         from mini_docker.network import setup_port_forwarding
 
                         for port_mapping in config.network.ports:
-                            host_port_str, container_port_str = port_mapping.split(":")
+                            host_port, container_port = validate_port_mapping(
+                                port_mapping
+                            )
                             setup_port_forwarding(
-                                int(host_port_str), int(container_port_str), ip
+                                host_port, container_port, ip
                             )
 
                 except Exception as e:
@@ -711,9 +725,9 @@ class Container:
                 from mini_docker.network import remove_port_forwarding
 
                 for port_mapping in config.network.ports:
-                    host_port_str, container_port_str = port_mapping.split(":")
+                    host_port, container_port = validate_port_mapping(port_mapping)
                     remove_port_forwarding(
-                        int(host_port_str), int(container_port_str), config.network.ip
+                        host_port, container_port, config.network.ip
                     )
 
             network = Network(config.id)

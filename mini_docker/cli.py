@@ -456,6 +456,7 @@ def parse_volume(volume_str: str) -> tuple:
 def cmd_run(args: argparse.Namespace) -> int:
     """Handle run command."""
     from mini_docker.container import Container, ContainerError
+    from mini_docker.utils import validate_port_mapping
 
     # Parse environment variables
     env = {}
@@ -486,21 +487,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     # Parse ports
     ports = []
     for p in args.publish:
-        # Expected format: "8080:80"
-        parts = p.split(":")
-        if len(parts) != 2:
-            print(
-                f"Error: Invalid port format '{p}'. Expected exactly two parts 'hostPort:containerPort'",
-                file=sys.stderr,
-            )
-            return 1
-
         try:
-            int(parts[0])
-            int(parts[1])
+            validate_port_mapping(p)
         except ValueError:
             print(
-                f"Error: Invalid port format '{p}'. Ports must be integers.",
+                f"Error: Invalid --publish value '{p}'. Expected hostPort:containerPort with integer ports in range 1-65535.",
                 file=sys.stderr,
             )
             return 1

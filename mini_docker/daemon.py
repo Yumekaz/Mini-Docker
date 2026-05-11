@@ -23,7 +23,7 @@ from mini_docker.container import (
     ContainerNotFoundError,
 )
 from mini_docker.metadata import asdict
-from mini_docker.utils import DEFAULT_SOCKET_PATH, ensure_directories
+from mini_docker.utils import DEFAULT_SOCKET_PATH, ensure_directories, validate_port_mapping
 
 
 class UnixSocketHTTPServer(socketserver.UnixStreamServer):
@@ -138,6 +138,13 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                     for binding in host_bindings:
                         host_port = binding.get("HostPort")
                         if host_port:
+                            try:
+                                validate_port_mapping(f"{host_port}:{container_port}")
+                            except ValueError as exc:
+                                self.send_error_response(
+                                    400, f"Invalid PortBindings entry: {exc}"
+                                )
+                                return
                             ports.append(f"{host_port}:{container_port}")
 
                 config = self.container_manager.create(
