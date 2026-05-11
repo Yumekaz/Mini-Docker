@@ -323,6 +323,7 @@ class Container:
         # We must make sure the container directory exists before setting up the logger.
         # This is because the logger tries to open a file inside this directory immediately.
         import os
+
         from mini_docker.metadata import get_container_path
 
         os.makedirs(get_container_path(config.id), exist_ok=True)

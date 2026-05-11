@@ -1,7 +1,8 @@
-import os
 import ctypes
-import pytest
+import os
 from unittest import mock
+
+import pytest
 
 from mini_docker import namespaces
 from mini_docker.namespaces import NamespaceError

@@ -12,11 +12,11 @@ import os
 import socketserver
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
-from typing import Dict, Any
+from typing import Any, Dict
 
 from mini_docker.container import Container, ContainerError
 from mini_docker.metadata import asdict
-from mini_docker.utils import ensure_directories, DEFAULT_SOCKET_PATH
+from mini_docker.utils import DEFAULT_SOCKET_PATH, ensure_directories
 
 
 class UnixSocketHTTPServer(socketserver.UnixStreamServer):
