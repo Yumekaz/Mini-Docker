@@ -46,6 +46,11 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(payload).encode("utf-8"))
 
+    def send_empty_response(self, status_code: int = 204):
+        """Helper for status codes that must not include a response body."""
+        self.send_response(status_code)
+        self.end_headers()
+
     def send_error_response(self, status_code: int, message: str):
         """Helper to send error responses."""
         self.send_json_response(status_code, {"error": message})
@@ -132,10 +137,15 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
             try:
                 # Daemon API calls must never attach to container stdio, otherwise
                 # the request thread can block waiting on container I/O.
+<<<<<<< HEAD
                 pid = self.container_manager.start(container_id, attach=False)
                 self.send_json_response(
                     204, {"message": f"Started container {container_id} with PID {pid}"}
                 )
+=======
+                self.container_manager.start(container_id, attach=False)
+                self.send_empty_response(204)
+>>>>>>> ad13ff7 (Add restart regression tests for network metadata reset behavior)
             except ContainerError as e:
                 self.send_error_response(500, str(e))
             return
@@ -143,11 +153,8 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
         elif path.startswith("/containers/") and path.endswith("/restart"):
             container_id = path.split("/")[2]
             try:
-                pid = self.container_manager.restart(container_id)
-                self.send_json_response(
-                    204,
-                    {"message": f"Restarted container {container_id} with PID {pid}"},
-                )
+                self.container_manager.restart(container_id)
+                self.send_empty_response(204)
             except ContainerError as e:
                 self.send_error_response(500, str(e))
             return
@@ -156,9 +163,7 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
             container_id = path.split("/")[2]
             try:
                 self.container_manager.stop(container_id)
-                self.send_json_response(
-                    204, {"message": f"Stopped container {container_id}"}
-                )
+                self.send_empty_response(204)
             except ContainerError as e:
                 self.send_error_response(500, str(e))
             return
@@ -181,9 +186,7 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                     container_id, force=force, remove_volumes=v
                 )
                 if success:
-                    self.send_json_response(
-                        204, {"message": f"Removed container {container_id}"}
-                    )
+                    self.send_empty_response(204)
                 else:
                     self.send_error_response(500, "Failed to remove container")
             except ContainerError as e:
