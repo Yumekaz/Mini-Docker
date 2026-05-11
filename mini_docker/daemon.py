@@ -23,6 +23,7 @@ from mini_docker.container import (
     ContainerNotFoundError,
 )
 from mini_docker.metadata import asdict
+from mini_docker.metadata import ContainerLookupAmbiguityError
 from mini_docker.utils import DEFAULT_SOCKET_PATH, ensure_directories
 
 
@@ -99,11 +100,14 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
         elif path.startswith("/containers/") and path.endswith("/json"):
             # Inspect container
             container_id = path.split("/")[2]
-            config = self.container_manager.inspect(container_id)
-            if config:
-                self.send_json_response(200, asdict(config))
-            else:
-                self.send_error_response(404, "Container not found")
+            try:
+                config = self.container_manager.inspect(container_id)
+                if config:
+                    self.send_json_response(200, asdict(config))
+                else:
+                    self.send_error_response(404, "Container not found")
+            except ContainerLookupAmbiguityError as e:
+                self.send_error_response(400, str(e))
             return
 
         elif path == "/info":

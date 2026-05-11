@@ -43,6 +43,7 @@ def isolated_storage(tmp_path, monkeypatch):
 def test_container_lookup_by_prefix_and_name(isolated_storage):
     from mini_docker.metadata import (
         ContainerConfig,
+        ContainerLookupAmbiguityError,
         find_container_id,
         save_container_config,
     )
@@ -65,6 +66,42 @@ def test_container_lookup_by_prefix_and_name(isolated_storage):
 
     assert find_container_id("aaaa") == alpha.id
     assert find_container_id("beta") == beta.id
+
+    alpha_two = ContainerConfig(
+        id="a" * 11 + "b",
+        name="alpha-two",
+        rootfs="/rootfs",
+        command=["/bin/sh"],
+    )
+    save_container_config(alpha_two)
+
+    with pytest.raises(ContainerLookupAmbiguityError):
+        find_container_id("aaa")
+
+
+def test_container_lookup_prioritizes_exact_id_and_name(isolated_storage):
+    from mini_docker.metadata import ContainerConfig, find_container_id, save_container_config
+
+    exact_id = "ab"
+    prefixed = "abcccccccccc"
+
+    exact = ContainerConfig(
+        id=exact_id,
+        name="target-name",
+        rootfs="/rootfs",
+        command=["/bin/sh"],
+    )
+    prefix_match = ContainerConfig(
+        id=prefixed,
+        name="ab",
+        rootfs="/rootfs",
+        command=["/bin/sh"],
+    )
+    save_container_config(exact)
+    save_container_config(prefix_match)
+
+    assert find_container_id("ab") == exact_id
+    assert find_container_id("target-name") == exact_id
 
 
 def test_container_load_refreshes_stale_running_state(isolated_storage, monkeypatch):

@@ -744,12 +744,17 @@ def cmd_logs(args: argparse.Namespace) -> int:
 def cmd_inspect(args: argparse.Namespace) -> int:
     """Handle inspect command."""
     from mini_docker.container import Container
+    from mini_docker.metadata import ContainerLookupAmbiguityError
 
     container = Container()
     results = []
 
     for container_id in args.container:
-        config = container.inspect(container_id)
+        try:
+            config = container.inspect(container_id)
+        except ContainerLookupAmbiguityError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
         if not config:
             print(f"Error: Container not found: {container_id}", file=sys.stderr)
             return 1
