@@ -214,6 +214,9 @@ def create_parser() -> argparse.ArgumentParser:
     restart_parser.add_argument(
         "--time", "-t", type=int, default=10, help="Seconds to wait before SIGKILL"
     )
+    restart_parser.add_argument(
+        "--force", "-f", action="store_true", help="Force restart (SIGKILL immediately)"
+    )
     stop_parser.add_argument(
         "--force", "-f", action="store_true", help="Force stop (SIGKILL immediately)"
     )
@@ -775,7 +778,8 @@ def cmd_restart(args: argparse.Namespace) -> int:
 
     for c in args.container:
         try:
-            pid = container.restart(c, timeout=args.time)
+            timeout = 0 if args.force else args.time
+            pid = container.restart(c, timeout=timeout)
             print(f"Restarted container {c} with PID {pid}")
         except ContainerError as e:
             print(f"Error: {e}", file=sys.stderr)
