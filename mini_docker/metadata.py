@@ -21,6 +21,20 @@ from mini_docker.utils import (
     is_process_alive,
 )
 
+class ContainerLookupError(Exception):
+    """Base exception for container lookup failures."""
+
+
+class ContainerLookupAmbiguityError(ContainerLookupError):
+    """Raised when a container lookup prefix matches multiple containers."""
+
+    def __init__(self, prefix: str, matches: List[str]):
+        self.prefix = prefix
+        self.matches = matches
+        super().__init__(
+            f"Ambiguous container identifier '{prefix}' matches: {', '.join(matches)}"
+        )
+
 
 @dataclass
 class NetworkConfig:
@@ -274,19 +288,25 @@ def find_container_id(prefix: str) -> Optional[str]:
     if not prefix:
         return None
 
-    if container_exists(prefix):
-        return prefix
-
     container_ids = _list_container_ids()
 
-    for container_id in container_ids:
-        if container_id.startswith(prefix):
-            return container_id
+    if container_exists(prefix):
+        return prefix
 
     for container_id in container_ids:
         data = _read_container_data(container_id)
         if data and data.get("name") == prefix:
             return container_id
+
+    matches = []
+    for container_id in container_ids:
+        if container_id.startswith(prefix):
+            matches.append(container_id)
+
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ContainerLookupAmbiguityError(prefix, matches)
 
     return None
 
