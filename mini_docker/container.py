@@ -293,13 +293,20 @@ class Container:
                     ) from e
 
             # Set up networking from parent after the child entered its net namespace.
-            if (
-                config.network_enabled
-                and "net" in config.namespaces
-                and not config.rootless
-                and not config.pod_id
-            ):
-                try:
+            network_required = config.network_enabled or bool(config.network.ports)
+            can_setup_network = (
+                "net" in config.namespaces and not config.rootless and not config.pod_id
+            )
+            network = None
+            configured_port_forwards = []
+
+            try:
+                if network_required and not can_setup_network:
+                    raise ContainerError(
+                        "Networking was requested, but this container mode does not support host-managed networking"
+                    )
+
+                if can_setup_network:
                     network = Network(config.id)
                     veth_host, veth_container, ip = network.setup(pid)
 
@@ -316,12 +323,43 @@ class Container:
 
                         for port_mapping in config.network.ports:
                             host_port_str, container_port_str = port_mapping.split(":")
-                            setup_port_forwarding(
-                                int(host_port_str), int(container_port_str), ip
+                            host_port = int(host_port_str)
+                            container_port = int(container_port_str)
+                            setup_port_forwarding(host_port, container_port, ip)
+                            configured_port_forwards.append(
+                                (host_port, container_port, ip)
                             )
 
-                except Exception as e:
-                    print(f"Warning: Network setup failed: {e}", file=sys.stderr)
+            except Exception as e:
+                if not network_required:
+                    print(f"Warning: Optional network setup failed: {e}", file=sys.stderr)
+                else:
+                    from mini_docker.network import remove_port_forwarding
+
+                    for host_port, container_port, forward_ip in configured_port_forwards:
+                        remove_port_forwarding(host_port, container_port, forward_ip)
+
+                    if network is not None:
+                        network.cleanup()
+
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+
+                    try:
+                        _, status = os.waitpid(pid, 0)
+                        exit_code = (
+                            os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1
+                        )
+                    except OSError:
+                        exit_code = 1
+
+                    update_container_status(container_id, "stopped", exit_code=exit_code)
+
+                    os.close(p2c_w)
+                    os.close(c2p_r)
+                    raise ContainerError(f"Network setup failed: {e}") from e
 
             # Signal child to proceed
             try:
