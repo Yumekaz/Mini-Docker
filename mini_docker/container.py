@@ -147,7 +147,9 @@ class Container:
             raise ContainerNotFoundError(f"Pod not found: {pod_id}")
 
         namespaces = ["pid", "uts", "mnt", "ipc"]
-        if (pod and "net" in pod.shared_namespaces) or (network and not pod_id):
+        if (pod and "net" in pod.shared_namespaces) or (
+            (network or ports) and not pod_id
+        ):
             namespaces.append("net")
 
         resources = ResourceLimits(
@@ -174,7 +176,7 @@ class Container:
             detach=detach,
             interactive=interactive,
             tty=tty,
-            network_enabled=(network and not pod_id)
+            network_enabled=(bool(network or ports) and not pod_id)
             or bool(pod and "net" in pod.shared_namespaces),
             namespaces=namespaces,
         )
@@ -212,7 +214,9 @@ class Container:
             attach = not config.detach
 
         if config.status == "running":
-            raise ContainerInvalidStateError(f"Container already running: {container_id}")
+            raise ContainerInvalidStateError(
+                f"Container already running: {container_id}"
+            )
 
         # Check permissions
         if not config.rootless and not check_root():
@@ -332,11 +336,17 @@ class Container:
 
             except Exception as e:
                 if not network_required:
-                    print(f"Warning: Optional network setup failed: {e}", file=sys.stderr)
+                    print(
+                        f"Warning: Optional network setup failed: {e}", file=sys.stderr
+                    )
                 else:
                     from mini_docker.network import remove_port_forwarding
 
-                    for host_port, container_port, forward_ip in configured_port_forwards:
+                    for (
+                        host_port,
+                        container_port,
+                        forward_ip,
+                    ) in configured_port_forwards:
                         remove_port_forwarding(host_port, container_port, forward_ip)
 
                     if network is not None:
@@ -355,7 +365,9 @@ class Container:
                     except OSError:
                         exit_code = 1
 
-                    update_container_status(container_id, "stopped", exit_code=exit_code)
+                    update_container_status(
+                        container_id, "stopped", exit_code=exit_code
+                    )
 
                     os.close(p2c_w)
                     os.close(c2p_r)
@@ -647,9 +659,7 @@ class Container:
             raise ContainerNotFoundError(f"Container not found: {container_id}")
 
         if config.status != "running":
-            raise ContainerInvalidStateError(
-                f"Container not running: {container_id}"
-            )
+            raise ContainerInvalidStateError(f"Container not running: {container_id}")
 
         if not config.pid:
             update_container_status(container_id, "stopped")

@@ -21,6 +21,7 @@ from mini_docker.utils import (
     is_process_alive,
 )
 
+
 class ContainerLookupError(Exception):
     """Base exception for container lookup failures."""
 

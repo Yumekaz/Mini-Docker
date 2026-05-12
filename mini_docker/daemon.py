@@ -63,7 +63,6 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
         """Helper to send error responses."""
         self.send_json_response(status_code, {"error": message})
 
-
     def map_container_error(self, error: ContainerError) -> int:
         """Map typed container errors to HTTP status codes."""
         if isinstance(error, ContainerNotFoundError):
