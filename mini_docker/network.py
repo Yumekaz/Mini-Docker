@@ -157,7 +157,9 @@ def delete_veth(veth_name: str) -> None:
         pass
 
 
-def move_veth_to_netns(veth_name: str, pid: int) -> None:
+def move_veth_to_netns(
+    veth_name: str, pid: int, target_name: Optional[str] = None
+) -> None:
     """
     Move veth interface to a network namespace.
 
@@ -167,9 +169,15 @@ def move_veth_to_netns(veth_name: str, pid: int) -> None:
     Args:
         veth_name: Veth interface to move
         pid: PID of process in target namespace
+        target_name: Optional name to rename the interface to inside the namespace
     """
     try:
-        run_ip_command(["link", "set", veth_name, "netns", str(pid)])
+        if target_name:
+            run_ip_command(
+                ["link", "set", veth_name, "netns", str(pid), "name", target_name]
+            )
+        else:
+            run_ip_command(["link", "set", veth_name, "netns", str(pid)])
     except subprocess.CalledProcessError as e:
         raise NetworkError(f"Failed to move veth to netns: {e}")
 
@@ -315,19 +323,26 @@ def setup_container_networking(
     # Create veth pair names using container ID
     short_id = container_id[:8]
     veth_host = f"veth{short_id}"
-    veth_container = f"eth0"
+    veth_container_temp = f"ceth{short_id}"
+    veth_container_final = f"eth0"
 
     # Truncate names to fit Linux limits (15 chars)
     veth_host = veth_host[:15]
+    veth_container_temp = veth_container_temp[:15]
 
     # Create veth pair
-    create_veth_pair(veth_host, veth_container)
+    create_veth_pair(veth_host, veth_container_temp)
 
     # Attach host side to bridge
     attach_to_bridge(veth_host)
 
-    # Move container side to container's network namespace
-    move_veth_to_netns(veth_container, container_pid)
+    # Move container side to container's network namespace and rename to eth0
+    move_veth_to_netns(
+        veth_container_temp, container_pid, target_name=veth_container_final
+    )
+
+    # After moving, we refer to it as the final name inside the container
+    veth_container = veth_container_final
 
     # Set up NAT
     setup_nat()

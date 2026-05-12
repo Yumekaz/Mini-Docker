@@ -80,7 +80,11 @@ def test_container_lookup_by_prefix_and_name(isolated_storage):
 
 
 def test_container_lookup_prioritizes_exact_id_and_name(isolated_storage):
-    from mini_docker.metadata import ContainerConfig, find_container_id, save_container_config
+    from mini_docker.metadata import (
+        ContainerConfig,
+        find_container_id,
+        save_container_config,
+    )
 
     exact_id = "ab"
     prefixed = "abcccccccccc"
