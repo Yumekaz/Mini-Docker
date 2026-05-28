@@ -15,9 +15,12 @@ Container Lifecycle:
 """
 
 import errno
+import json
 import os
 import signal
 import sys
+import time
+from dataclasses import asdict
 from typing import Dict, List, Optional
 
 from mini_docker.capabilities import Capabilities
@@ -33,6 +36,7 @@ from mini_docker.logger import ContainerLogger
 from mini_docker.metadata import (
     ContainerConfig,
     MetadataStore,
+    get_container_path,
     load_container_config,
     save_container_config,
     update_container_status,
@@ -66,6 +70,34 @@ class ContainerInvalidRequestError(ContainerError):
 
 class ContainerInternalError(ContainerError):
     """Raised when an unexpected internal runtime failure occurs."""
+
+
+def _exit_code_from_wait_status(status: int) -> int:
+    """Convert a waitpid status into a shell-style process exit code."""
+    if hasattr(os, "WIFEXITED") and os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if hasattr(os, "WIFSIGNALED") and os.WIFSIGNALED(status):
+        return 128 + os.WTERMSIG(status)
+    if not hasattr(os, "WIFEXITED"):
+        return (status >> 8) & 0xFF
+    return 1
+
+
+def _open_container_metadata_fd(container_id: str) -> int:
+    """Open the host-side metadata file before chroot/pivot_root."""
+    flags = os.O_WRONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    config_path = os.path.join(get_container_path(container_id), "config.json")
+    return os.open(config_path, flags)
+
+
+def _write_config_to_fd(fd: int, config: ContainerConfig) -> None:
+    """Persist container metadata through a pre-opened host-side file descriptor."""
+    payload = json.dumps(asdict(config), indent=2).encode("utf-8")
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.ftruncate(fd, 0)
+    os.write(fd, payload)
 
 
 class Container:
@@ -414,6 +446,7 @@ class Container:
         logger = ContainerLogger(config.id)
 
         detached_log_fd = None
+        metadata_fd = None
         try:
             # Open the detached log file BEFORE we chroot, so we have the file descriptor ready.
             if not attach:
@@ -439,31 +472,10 @@ class Container:
                     namespaces_to_create.append("mnt")
 
             # Create cgroup before unshare (need to add self to cgroup)
-            cgroup = None
-            if not config.rootless:
-                try:
-                    cgroup = Cgroup(config.id)
-                    cgroup.set_limits(
-                        cpu_quota=config.resources.cpu_quota,
-                        memory_mb=config.resources.memory_mb,
-                        max_pids=config.resources.max_pids,
-                    )
-                    cgroup.add_process(os.getpid())
-                except Exception as e:
-                    logger.write(f"Warning: Cgroup setup failed: {e}\n")
+            self._setup_cgroup(config, logger)
 
             # Enter pod namespaces if specified
-            for ns_type, ns_path in pod_ns_paths.items():
-                try:
-                    fd = os.open(ns_path, os.O_RDONLY)
-                    from mini_docker.namespaces import NAMESPACE_FLAGS, setns
-
-                    setns(fd, NAMESPACE_FLAGS.get(ns_type, 0))
-                    os.close(fd)
-                except Exception as e:
-                    logger.write(
-                        f"Warning: Failed to enter pod namespace {ns_type}: {e}\n"
-                    )
+            self._enter_pod_namespaces(pod_ns_paths, logger)
 
             # Create new namespaces
             if namespaces_to_create:
@@ -499,6 +511,63 @@ class Container:
             if refreshed_config:
                 config = refreshed_config
 
+            needs_pid_supervisor = "pid" in config.namespaces
+            if needs_pid_supervisor:
+                try:
+                    metadata_fd = _open_container_metadata_fd(config.id)
+                except OSError as e:
+                    raise ContainerInternalError(
+                        f"Unable to open host metadata for PID supervisor: {e}"
+                    ) from e
+
+                supervisor_metadata_fd = metadata_fd
+                workload_log_fd = detached_log_fd
+                metadata_fd = None
+                detached_log_fd = None
+                self._supervise_pid_namespace_workload(
+                    config,
+                    supervisor_metadata_fd,
+                    logger,
+                    attach,
+                    workload_log_fd,
+                )
+
+            workload_log_fd = detached_log_fd
+            detached_log_fd = None
+            self._prepare_and_exec_workload(
+                config,
+                logger,
+                attach,
+                workload_log_fd,
+            )
+
+        except Exception as e:
+            logger.write(f"Container setup failed: {e}\n")
+            logger.close()
+            raise
+        finally:
+            # If startup failed before stdio redirection/exec, make sure this fd
+            # doesn't leak in the container supervisor process.
+            if detached_log_fd is not None:
+                try:
+                    os.close(detached_log_fd)
+                except OSError:
+                    pass
+            if metadata_fd is not None:
+                try:
+                    os.close(metadata_fd)
+                except OSError:
+                    pass
+
+    def _prepare_and_exec_workload(
+        self,
+        config: ContainerConfig,
+        logger: ContainerLogger,
+        attach: bool,
+        detached_log_fd: Optional[int],
+    ) -> None:
+        """Prepare the container root, security policy, stdio, and exec."""
+        try:
             # Set up filesystem
             rootfs_to_pivot = config.rootfs
 
@@ -513,10 +582,11 @@ class Container:
                     rootfs_to_pivot = merged
                     config.overlay_merged = merged
                 except (OSError, FilesystemError) as e:
-                    # In rootless mode, overlay might fail. Fallback to chroot.
-                    logger.write(
-                        f"Warning: Overlayfs setup failed ({e}), falling back to direct chroot\n"
-                    )
+                    if not config.rootless:
+                        raise ContainerInternalError(
+                            f"OverlayFS setup failed: {e}"
+                        ) from e
+                    logger.write(f"Overlayfs setup failed ({e}); using chroot\n")
                     config.use_overlay = False
                     rootfs_to_pivot = config.rootfs
 
@@ -542,7 +612,9 @@ class Container:
                 try:
                     configure_container_network(config.network.ip)
                 except Exception as e:
-                    logger.write(f"Warning: Network config failed: {e}\n")
+                    raise ContainerInternalError(
+                        f"Container network configuration failed: {e}"
+                    ) from e
 
             # Change to working directory
             try:
@@ -561,21 +633,8 @@ class Container:
             for key, value in config.env.items():
                 os.environ[key] = value
 
-            # Apply capabilities
-            if not config.rootless:
-                try:
-                    caps = Capabilities()
-                    caps.apply()
-                except Exception as e:
-                    logger.write(f"Warning: Capability setup failed: {e}\n")
-
-            # Apply seccomp filter
-            if config.seccomp_enabled:
-                try:
-                    seccomp = Seccomp()
-                    seccomp.apply()
-                except Exception as e:
-                    logger.write(f"Warning: Seccomp setup failed: {e}\n")
+            self._apply_capabilities(config, logger)
+            self._apply_seccomp(config, logger)
 
             if config.gid is not None:
                 os.setgid(config.gid)
@@ -597,21 +656,153 @@ class Container:
                     os.dup2(devnull_fd, sys.stdin.fileno())
                     os.close(devnull_fd)
 
-            # Replace process with command
-            os.execvp(config.command[0], config.command)
+            self._exec_workload(config)
 
         except Exception as e:
             logger.write(f"Container setup failed: {e}\n")
             logger.close()
             raise
-        finally:
-            # If startup failed before stdio redirection/exec, make sure this fd
-            # doesn't leak in the container supervisor process.
-            if detached_log_fd is not None:
-                try:
-                    os.close(detached_log_fd)
-                except OSError:
-                    pass
+
+    def _setup_cgroup(
+        self, config: ContainerConfig, logger: ContainerLogger
+    ) -> Optional[Cgroup]:
+        """Create and assign the process to a cgroup, failing closed in root mode."""
+        if config.rootless:
+            return None
+
+        try:
+            cgroup = Cgroup(config.id)
+            cgroup.set_limits(
+                cpu_quota=config.resources.cpu_quota,
+                memory_mb=config.resources.memory_mb,
+                max_pids=config.resources.max_pids,
+            )
+            cgroup.add_process(os.getpid())
+            return cgroup
+        except Exception as e:
+            logger.write(f"Cgroup setup failed: {e}\n")
+            raise ContainerInternalError(f"Cgroup setup failed: {e}") from e
+
+    def _enter_pod_namespaces(
+        self, pod_ns_paths: Dict[str, str], logger: ContainerLogger
+    ) -> None:
+        """Enter pod namespaces and fail startup if any requested namespace fails."""
+        for ns_type, ns_path in pod_ns_paths.items():
+            fd = None
+            try:
+                fd = os.open(ns_path, os.O_RDONLY)
+                from mini_docker.namespaces import NAMESPACE_FLAGS, setns
+
+                setns(fd, NAMESPACE_FLAGS.get(ns_type, 0))
+            except Exception as e:
+                logger.write(f"Failed to enter pod namespace {ns_type}: {e}\n")
+                raise ContainerInternalError(
+                    f"Failed to enter pod namespace {ns_type}: {e}"
+                ) from e
+            finally:
+                if fd is not None:
+                    os.close(fd)
+
+    def _apply_capabilities(
+        self, config: ContainerConfig, logger: ContainerLogger
+    ) -> None:
+        """Apply Linux capability policy, failing closed in root mode."""
+        if config.rootless:
+            return
+
+        try:
+            caps = Capabilities()
+            caps.apply()
+        except Exception as e:
+            logger.write(f"Capability setup failed: {e}\n")
+            raise ContainerInternalError(f"Capability setup failed: {e}") from e
+
+    def _apply_seccomp(self, config: ContainerConfig, logger: ContainerLogger) -> None:
+        """Apply seccomp policy when enabled, failing closed on filter errors."""
+        if not config.seccomp_enabled:
+            return
+
+        try:
+            seccomp = Seccomp()
+            seccomp.apply()
+        except Exception as e:
+            logger.write(f"Seccomp setup failed: {e}\n")
+            raise ContainerInternalError(f"Seccomp setup failed: {e}") from e
+
+    def _exec_workload(self, config: ContainerConfig) -> None:
+        """Replace the current process with the configured workload."""
+        os.execvp(config.command[0], config.command)
+
+    def _supervise_pid_namespace_workload(
+        self,
+        config: ContainerConfig,
+        metadata_fd: Optional[int],
+        logger: ContainerLogger,
+        attach: bool,
+        detached_log_fd: Optional[int],
+    ) -> None:
+        """
+        Fork the actual workload after CLONE_NEWPID setup.
+
+        The process that calls unshare(CLONE_NEWPID) remains in its old PID
+        namespace; its next child becomes PID 1 inside the new namespace. This
+        supervisor keeps the namespace init reaped and forwards termination
+        signals to the workload.
+        """
+        if metadata_fd is None:
+            raise ContainerInternalError("PID supervisor missing metadata fd")
+
+        workload_pid = os.fork()
+
+        if workload_pid == 0:
+            try:
+                os.close(metadata_fd)
+            except OSError:
+                pass
+            self._prepare_and_exec_workload(
+                config,
+                logger,
+                attach,
+                detached_log_fd,
+            )
+            os._exit(127)
+
+        logger.close()
+        if detached_log_fd is not None:
+            try:
+                os.close(detached_log_fd)
+            except OSError:
+                pass
+
+        config.pid = workload_pid
+        config.status = "running"
+        if config.started_at is None:
+            config.started_at = time.time()
+        _write_config_to_fd(metadata_fd, config)
+
+        def forward_signal(signum, _frame):
+            try:
+                os.kill(workload_pid, signum)
+            except OSError:
+                pass
+
+        for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            try:
+                signal.signal(signum, forward_signal)
+            except (ValueError, OSError):
+                pass
+
+        _, status = os.waitpid(workload_pid, 0)
+        exit_code = _exit_code_from_wait_status(status)
+
+        config.status = "stopped"
+        config.pid = None
+        config.finished_at = time.time()
+        config.exit_code = exit_code
+        _write_config_to_fd(metadata_fd, config)
+        os.close(metadata_fd)
+
+        os._exit(exit_code)
 
     def restart(self, container_id: str, timeout: int = 10) -> int:
         """

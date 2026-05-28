@@ -347,6 +347,11 @@ def create_parser() -> argparse.ArgumentParser:
         "-s",
         help="Path to the Unix socket (default: /var/run/mini-docker.sock or user specific)",
     )
+    daemon_parser.add_argument(
+        "--socket-mode",
+        default="660",
+        help="Octal permissions for the Unix socket (default: 660)",
+    )
 
     # =========================================================================
     # cleanup command (NEW)
@@ -1126,8 +1131,14 @@ def cmd_daemon(args: argparse.Namespace) -> int:
 
     socket_path = args.socket or DEFAULT_SOCKET_PATH
     try:
-        run_daemon(socket_path=socket_path)
+        socket_mode = int(args.socket_mode, 8)
+        if socket_mode < 0 or socket_mode > 0o777:
+            raise ValueError
+        run_daemon(socket_path=socket_path, socket_mode=socket_mode)
         return 0
+    except ValueError:
+        print(f"Error: Invalid socket mode: {args.socket_mode}", file=sys.stderr)
+        return 1
     except Exception as e:
         print(f"Error starting daemon: {e}", file=sys.stderr)
         return 1

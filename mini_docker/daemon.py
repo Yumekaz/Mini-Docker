@@ -27,13 +27,23 @@ from mini_docker.metadata import ContainerLookupAmbiguityError
 from mini_docker.utils import DEFAULT_SOCKET_PATH, ensure_directories
 
 
-class UnixSocketHTTPServer(socketserver.UnixStreamServer):
-    """A HTTP server that listens on a Unix domain socket."""
+if hasattr(socketserver, "UnixStreamServer"):
 
-    def get_request(self):
-        request, client_address = super().get_request()
-        # BaseHTTPRequestHandler expects the client_address to be a tuple of strings
-        return request, ["local", 0]
+    class UnixSocketHTTPServer(socketserver.UnixStreamServer):
+        """A HTTP server that listens on a Unix domain socket."""
+
+        def get_request(self):
+            request, client_address = super().get_request()
+            # BaseHTTPRequestHandler expects client_address to be tuple-like.
+            return request, ["local", 0]
+
+else:
+
+    class UnixSocketHTTPServer:
+        """Import-safe placeholder for non-Unix development hosts."""
+
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("Unix domain sockets require a Unix-like host")
 
 
 class DockerAPIHandler(BaseHTTPRequestHandler):
@@ -222,7 +232,7 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
         self.send_error_response(404, "Not Found")
 
 
-def run_daemon(socket_path: str = DEFAULT_SOCKET_PATH):
+def run_daemon(socket_path: str = DEFAULT_SOCKET_PATH, socket_mode: int = 0o660):
     """
     Start the Mini-Docker API daemon.
     """
@@ -235,9 +245,21 @@ def run_daemon(socket_path: str = DEFAULT_SOCKET_PATH):
     if os.path.exists(socket_path):
         os.remove(socket_path)
 
-    print(f"Starting Mini-Docker daemon listening on unix://{socket_path}")
-
     with UnixSocketHTTPServer(socket_path, DockerAPIHandler) as httpd:
+        try:
+            os.chmod(socket_path, socket_mode)
+        except OSError as e:
+            if os.path.exists(socket_path):
+                os.remove(socket_path)
+            raise RuntimeError(
+                f"Failed to secure daemon socket permissions: {e}"
+            ) from e
+
+        print(
+            "Starting Mini-Docker daemon listening on "
+            f"unix://{socket_path} mode={oct(socket_mode)}"
+        )
+
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

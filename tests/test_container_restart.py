@@ -19,7 +19,7 @@ def _make_config(status: str = "running"):
 @mock.patch("mini_docker.container.load_container_config")
 def test_restart_raises_when_container_missing(mock_load, mock_save):
     mock_load.return_value = None
-    manager = Container()
+    manager = Container.__new__(Container)
 
     with pytest.raises(ContainerError, match="Container not found"):
         manager.restart("missing")
@@ -39,7 +39,7 @@ def test_restart_stops_running_container_and_resets_network_metadata(
     mock_load.side_effect = [initial, refreshed]
     mock_start.return_value = 4242
 
-    manager = Container()
+    manager = Container.__new__(Container)
     pid = manager.restart("abc123", timeout=7)
 
     assert pid == 4242
@@ -63,7 +63,7 @@ def test_restart_skips_stop_for_non_running_container(
     mock_load.side_effect = [initial, refreshed]
     mock_start.return_value = 3001
 
-    manager = Container()
+    manager = Container.__new__(Container)
     pid = manager.restart("abc123")
 
     assert pid == 3001

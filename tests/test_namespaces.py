@@ -117,8 +117,8 @@ class TestNamespaceFunctions:
         assert namespaces.get_namespace_id(1234, "pid") is None
 
     @mock.patch("builtins.open", new_callable=mock.mock_open)
-    @mock.patch("os.getuid", return_value=1000)
-    @mock.patch("os.getgid", return_value=1000)
+    @mock.patch("os.getuid", return_value=1000, create=True)
+    @mock.patch("os.getgid", return_value=1000, create=True)
     def test_setup_user_namespace(self, mock_getgid, mock_getuid, mock_file):
         namespaces.setup_user_namespace(1234)
 
