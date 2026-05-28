@@ -1,194 +1,195 @@
-# 🐳 Mini-Docker
+# Mini-Docker
 
-**A Fully Functional Container Runtime Built from Scratch in Python**
+**A lightweight Linux container runtime built from scratch in Python.**
 
-Mini-Docker is transitioning into a robust, lightweight container runtime serving as the foundation for a scalable, Stateful-first Platform-as-a-Service (PaaS).
+Mini-Docker is being developed as the runtime foundation for a
+low-infrastructure self-hosted PaaS. The goal is to run backend services,
+workers, APIs, and stateful workloads on small Linux servers without depending
+on Docker, containerd, or runc for the core lifecycle path.
 
----
+The runtime still works close to the kernel: namespaces, cgroups, mounts,
+seccomp, capabilities, veth networking, and process lifecycle management are
+handled directly through Python, `ctypes`, libc calls, and Linux userspace
+interfaces.
 
-## What is Mini-Docker?
+## Current Status
 
-Mini-Docker implements the core technologies powering Docker and Podman directly at the Linux kernel level using pure Python and raw syscalls. 
+Mini-Docker is a serious runtime prototype moving toward a PaaS backend.
 
-Originally built as an educational tool, it is now the **default runtime backend and engine** for self-hosted backend PaaS platforms. It provides a clean runtime abstraction for deploying, running, and monitoring APIs, workers, databases, and stateful services on low-resource Linux hardware.
+It is not yet an audited production runtime for arbitrary untrusted
+multi-tenant workloads. The right current use is controlled Linux-server
+experimentation, trusted or semi-trusted workloads, and building the surrounding
+PaaS control plane while hardening the runtime.
 
-**Why Mini-Docker?**
+## Why Mini-Docker Exists
 
-| Challenge | Solution |
-|-----------|----------|
-| Heavy orchestration overhead | Clean, low-footprint Python implementation |
-| Hard to integrate with custom PaaS | Built-in REST API Daemon via Unix Socket |
-| Black-box failure states | Honest Ops: precise exit codes and logs |
+| Goal | Runtime Direction |
+| --- | --- |
+| Low infrastructure overhead | Keep the runtime small, direct, and Linux-native |
+| PaaS integration | Expose lifecycle operations through a Unix-socket API |
+| Operational clarity | Track container metadata, logs, status, and exit codes |
+| Security hardening | Layer namespaces, cgroups, seccomp, capabilities, and rootless mode |
+| Runtime ownership | Build the core lifecycle path without high-level container runtimes |
 
----
+## Features
 
-## ✨ Features
+| Area | Implemented Capability |
+| --- | --- |
+| Container lifecycle | create, start, stop, restart, remove, inspect, exec, logs |
+| Namespaces | PID, UTS, mount, IPC, network, user, and cgroup namespace support |
+| Resource limits | cgroups v2 CPU, memory, and PID limits |
+| Filesystem | OverlayFS copy-on-write support with chroot fallback |
+| Networking | bridge, veth pair setup, NAT, and host port publishing |
+| Security | seccomp-BPF filtering, capability reduction, `NO_NEW_PRIVS` |
+| API | Unix Domain Socket HTTP daemon for external controllers |
+| Pods | shared namespace grouping for sidecar-style workloads |
+| OCI | basic OCI bundle parsing and execution path |
+| Images | simple `Imagefile` builder for local rootfs-based images |
 
-### Core Features
-
-| Feature | Description |
-|---------|-------------|
-| **Namespace Isolation** | All 7 Linux namespaces (PID, UTS, Mount, IPC, Network, User, Cgroup) |
-| **Cgroups v2** | Resource limiting (CPU, memory, process count) |
-| **Virtual Networking** | Veth pairs with bridge, NAT, and `iptables` port publishing |
-| **REST API Daemon** | Unix Domain Socket API for programmatic PaaS control |
-| **OverlayFS** | Copy-on-write filesystem for efficient storage |
-| **Honest Ops** | Accurate process exit code tracking and reliable restart policies |
-| **Pod Support** | Kubernetes-style pod grouping and shared namespaces |
-| **Rootless Mode** | Run containers without root via user namespaces |
-
-### Security Layers
+## Architecture
 
 ```text
-Layer 1: Namespaces      → Process isolation (7 namespace types)
-Layer 2: Cgroups v2      → Resource limits (CPU, memory, PIDs)
-Layer 3: Seccomp-BPF     → Syscall filtering (~50 whitelisted calls)
-Layer 4: Capabilities    → Privilege reduction (drop dangerous caps)
-Layer 5: NO_NEW_PRIVS    → Escalation prevention (prctl flag)
+PaaS controller or CLI
+        |
+        v
+Mini-Docker daemon / CLI
+        |
+        v
+Container manager
+        |
+        +-- namespaces
+        +-- cgroups v2
+        +-- filesystem setup
+        +-- veth / bridge networking
+        +-- seccomp filter
+        +-- capability drop
+        |
+        v
+Container process
 ```
 
----
+## Requirements
 
-## 🚀 Quick Start
+| Requirement | Minimum |
+| --- | --- |
+| OS | Linux |
+| Kernel | 4.18+ recommended |
+| Python | 3.7+ |
+| Privileges | root for full mode, user namespaces for rootless mode |
+| System tools | `ip`, `iptables`, `mount`, `chroot` for full feature paths |
 
-### Prerequisites
+Windows is fine for editing and pure Python checks, but real runtime behavior
+must be validated on Linux because the project depends on Linux-only kernel
+features.
 
-| Requirement | Minimum | Check Command |
-|-------------|---------|---------------|
-| Linux Kernel | 4.18+ | `uname -r` |
-| Python | 3.7+ | `python3 --version` |
-| Root access | Yes (or rootless) | `whoami` |
-
-### Installation
+## Quick Start
 
 ```bash
-# Clone the repository
 git clone https://github.com/Yumekaz/Mini-Docker.git
 cd Mini-Docker
 
-# Run setup script (creates rootfs and bridges)
 sudo ./scripts/setup.sh
-
-# Verify installation
 python3 -m mini_docker --help
 ```
 
----
-
-## 💻 Usage
-
-### Basic Commands
+Run a basic container:
 
 ```bash
-# Run a simple command
-sudo python3 -m mini_docker run ./rootfs /bin/echo "Hello World"
+sudo python3 -m mini_docker run ./rootfs /bin/echo "Hello from Mini-Docker"
+```
 
-# Run a detached background service
+Run a detached service:
+
+```bash
 sudo python3 -m mini_docker run -d --name web ./rootfs /bin/sleep 3600
-```
-
-### 🔌 Port Publishing & Networking
-
-Expose your containers to the host (and the internet) using the `--publish` flag. This uses `iptables` NAT PREROUTING to route external traffic into the container's isolated veth network.
-
-```bash
-# Map host port 8080 to container port 80
-sudo python3 -m mini_docker run -d -p 8080:80 --name web-server ./rootfs /bin/sh
-```
-
-### 🔄 Container Lifecycle & Honest Ops
-
-Mini-Docker accurately tracks why processes fail by reaping zombies and persisting the `exit_code`. This allows a supervising PaaS to make smart restart and rollback decisions.
-
-```bash
-# List all containers (shows status and accurate exit codes)
 sudo python3 -m mini_docker ps -a
-
-# Restart a crashed or stopped container
-sudo python3 -m mini_docker restart web-server
-
-# Fetch logs from a container
-sudo python3 -m mini_docker logs web-server
+sudo python3 -m mini_docker logs web
 ```
 
-### 🤖 The REST API Daemon (For PaaS Integrations)
-
-Mini-Docker can run as a background daemon listening on a Unix Domain Socket, allowing external applications (like a PaaS control plane) to manage containers programmatically via HTTP requests, exactly like `/var/run/docker.sock`.
+Run with resource limits:
 
 ```bash
-# Start the daemon
+sudo python3 -m mini_docker run \
+  --memory 100M \
+  --cpu 50 \
+  --pids 20 \
+  ./rootfs /bin/sh
+```
+
+Publish a port:
+
+```bash
+sudo python3 -m mini_docker run -d \
+  --name web-server \
+  --publish 8080:80 \
+  ./rootfs /bin/sh
+```
+
+Start the daemon for a PaaS control plane:
+
+```bash
 sudo python3 -m mini_docker daemon --socket /var/run/mini-docker.sock
 ```
 
-*Example API calls from your PaaS controller:*
+Supported daemon endpoints include:
+
 - `GET /containers/json`
+- `GET /containers/{id}/json`
 - `POST /containers/create`
 - `POST /containers/{id}/start`
 - `POST /containers/{id}/restart`
+- `POST /containers/{id}/stop`
+- `DELETE /containers/{id}`
 
-### Resource Limits
+## Rootless Mode
 
-```bash
-# Limit memory to 100MB and CPU to 50%
-sudo python3 -m mini_docker run \
-    --memory 100M \
-    --cpu 50 \
-    --pids 10 \
-    ./rootfs /bin/sh
-```
-
-### Pod Support (Kubernetes-style)
+Mini-Docker includes rootless support through user namespaces:
 
 ```bash
-# Create a pod
-sudo python3 -m mini_docker pod create mypod
-
-# Add containers to pod (shared namespaces)
-sudo python3 -m mini_docker pod add mypod --name app ./rootfs /bin/sh
+python3 -m mini_docker run --rootless ./rootfs /bin/sh
 ```
 
----
+Rootless mode is useful for development and safer local experimentation. Some
+features are naturally limited: bridge networking, strict cgroup enforcement,
+and OverlayFS may require root or host-specific configuration.
 
-## 📐 Project Structure
+## Project Layout
 
 ```text
-Mini-Docker/
-├── mini_docker/           # Core runtime engine code
-│   ├── cli.py            # Command-line interface
-│   ├── daemon.py         # Unix Socket REST API Server
-│   ├── container.py      # Container lifecycle (start, stop, restart)
-│   ├── namespaces.py     # Linux namespaces
-│   ├── cgroups.py        # Cgroups v2
-│   ├── filesystem.py     # OverlayFS & chroot
-│   ├── network.py        # Virtual networking & iptables port mapping
-│   ├── metadata.py       # State management & exit code tracking
-│   └── ...
-├── docs/                 # Documentation
-├── tests/                # Unit tests
-└── scripts/              # Setup and teardown utilities
+mini_docker/
+  cli.py            command-line interface
+  daemon.py         Unix-socket HTTP API
+  container.py      lifecycle orchestration
+  namespaces.py     Linux namespace wrappers
+  cgroups.py        cgroups v2 resource controls
+  filesystem.py     OverlayFS, chroot, pivot_root helpers
+  network.py        bridge, veth, NAT, port forwarding
+  seccomp.py        seccomp-BPF whitelist filter
+  capabilities.py   Linux capability handling
+  metadata.py       container state and lookup
+  pod.py            pod-style shared namespace support
+  oci.py            OCI bundle support
 ```
 
----
+## Roadmap Toward A PaaS Runtime
 
-## 🔒 Security Notice
+The next hardening work should focus on:
 
-Mini-Docker is transitioning into a production-capable runtime adapter for lightweight PaaS environments. However, it relies heavily on local Linux primitives and namespace isolation. When running multi-tenant workloads, always pair it with the built-in Seccomp and Capability dropping mechanisms, and avoid running untrusted binaries with elevated host privileges.
+- fail-closed startup when cgroups, seccomp, capabilities, or namespace setup fails
+- Linux integration tests that actually run containers under root and rootless modes
+- stronger daemon authentication and socket permission handling
+- health checks, restart supervision, and deployment metadata
+- deterministic cleanup of networking, mounts, cgroups, and process state
+- image provenance, rootfs validation, and supply-chain checks
+- documented threat model for trusted, semi-trusted, and untrusted workloads
 
----
+## Security Notice
 
-## 🛠️ Development
+Mini-Docker uses real isolation mechanisms, but it has not yet gone through a
+professional security audit, fuzzing campaign, or hostile multi-tenant review.
+Do not expose it as an open public compute platform until the hardening roadmap
+is complete and independently reviewed.
 
-```bash
-# Run tests
-pytest tests/ -v
+## License
 
-# Run linter & formatter
-flake8 mini_docker/
-black mini_docker/ tests/
-```
-
----
-
-## 📄 License
-
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](LICENSE).

@@ -360,10 +360,10 @@ User Command
 
 ### Why Python?
 
-- Educational clarity over performance
-- Easy to read and understand
-- Extensive standard library
-- Lower barrier to entry for learners
+- Fast iteration while the runtime architecture is still evolving
+- Direct access to Linux syscalls through `ctypes` and libc
+- A small standard-library control plane around low-level kernel primitives
+- Easy integration with a future PaaS API, supervisor, and deployment layer
 
 ### Why Cgroups v2 Only?
 

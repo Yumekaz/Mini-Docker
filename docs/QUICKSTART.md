@@ -1,6 +1,6 @@
-# 🚀 Quick Start Guide
+# Quick Start Guide
 
-Get Mini-Docker running in 5 minutes!
+Run a first Mini-Docker container on a Linux host.
 
 ---
 
@@ -91,7 +91,7 @@ exit
 
 ---
 
-## What Just Happened?
+## Runtime Flow
 
 When you ran that container, Mini-Docker:
 
@@ -239,4 +239,5 @@ python3 -m mini_docker run --rootless ./rootfs /bin/sh
 
 ---
 
-**Congratulations!** 🎉 You've successfully run your first container with Mini-Docker!
+You now have a working Mini-Docker smoke test and can move on to API, security,
+and PaaS integration work.

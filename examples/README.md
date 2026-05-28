@@ -225,7 +225,7 @@ sudo mount -t cgroup2 none /sys/fs/cgroup
 
 ## Modifying Examples
 
-Feel free to modify these examples for learning:
+These examples are meant to be modified for runtime experiments:
 
 1. **Change resource limits** in `resource_limits.py`
 2. **Add new commands** in `simple_container.py`

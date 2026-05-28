@@ -12,7 +12,7 @@ This runtime implements:
 - Pod support for shared namespaces
 - Rootless container execution
 
-Author: Mini-Docker Contributors
+Author: Mihir Swarnkar
 License: MIT
 """
 

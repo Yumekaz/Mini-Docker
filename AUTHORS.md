@@ -1,15 +1,12 @@
-## Authors
+## Author
 
-Mini-Docker is a collaborative systems project focused on exploring
-containerization concepts, distributed systems behavior, and storage design.
+Mini-Docker is currently designed, upgraded, and maintained by:
 
-### Contributors
+- **Mihir Swarnkar** - [@Yumekaz](https://github.com/Yumekaz)
 
-- **Mihir Swarnkar** — [@Yumekaz](https://github.com/Yumekaz)
-- **Tarun Pathak** — [@Tarunpathak001](https://github.com/Tarunpathak001)
-- **Diksha Kunwar** — [@dikshakunwar](https://github.com/dikshakunwar)
+## Project Note
 
-## Notes
+Mini-Docker is a solo-maintained lightweight Linux container runtime intended to
+become the runtime foundation for a low-infrastructure self-hosted PaaS.
 
-- Contributions include system design, implementation, testing, and documentation.
-- This project is **not affiliated with or endorsed by Docker, Inc.**
+This project is **not affiliated with or endorsed by Docker, Inc.**

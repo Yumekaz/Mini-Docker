@@ -66,11 +66,11 @@ sudo python3 -m mini_docker rm myapp
 Set a custom hostname:
 
 ```bash
-sudo python3 -m mini_docker run --hostname production-web ./rootfs /bin/sh
+sudo python3 -m mini_docker run --hostname service-web ./rootfs /bin/sh
 
 # Inside container:
 $ hostname
-# Output: production-web
+# Output: service-web
 ```
 
 ### Background Container

@@ -1,311 +1,189 @@
 # Security Model
 
-This document explains Mini-Docker's security architecture in detail.
+Mini-Docker is being hardened as a lightweight runtime foundation for a
+self-hosted PaaS. Its security model is based on Linux kernel isolation layers:
+namespaces, cgroups, seccomp, capabilities, `NO_NEW_PRIVS`, and filesystem
+separation.
 
----
+This document describes the intended model and the current boundaries. It does
+not claim that Mini-Docker is already audited or safe for arbitrary hostile
+multi-tenant workloads.
 
-## ⚠️ Disclaimer
+## Security Goals
 
-**Mini-Docker is for educational purposes only.**
+Mini-Docker aims to provide:
 
-While it implements real security mechanisms, it has NOT been:
-- Professionally audited
-- Fuzz tested
-- Penetration tested
+- process isolation from the host and other containers
+- filesystem isolation through mount namespaces and isolated root filesystems
+- resource containment through cgroups v2
+- reduced syscall surface through seccomp-BPF
+- reduced privilege through Linux capability filtering
+- safer execution through `NO_NEW_PRIVS`
+- optional rootless execution through user namespaces
 
-For production workloads, use [runc](https://github.com/opencontainers/runc), [crun](https://github.com/containers/crun), or other hardened runtimes.
+## Threat Model
 
----
+### In Scope
 
-## Defense in Depth
+Mini-Docker is designed to reduce risk from:
 
-Mini-Docker implements 5 independent security layers. Each layer provides protection even if other layers fail:
+- accidental process interference between workloads
+- noisy-neighbor CPU, memory, and PID exhaustion
+- filesystem writes escaping the configured rootfs
+- simple privilege escalation attempts through unnecessary capabilities
+- direct use of dangerous syscalls blocked by the seccomp policy
+- network isolation gaps between container and host namespaces
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    CONTAINER PROCESS                         │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  Layer 5: NO_NEW_PRIVS                               │   │
-│  │  ───────────────────                                 │   │
-│  │  Prevents setuid/setgid escalation                   │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                          │                                  │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  Layer 4: Capabilities                               │   │
-│  │  ────────────────────                                │   │
-│  │  Drops all dangerous capabilities                    │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                          │                                  │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  Layer 3: Seccomp-BPF                                │   │
-│  │  ────────────────────                                │   │
-│  │  Whitelist ~60 safe syscalls only                    │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                          │                                  │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  Layer 2: Cgroups v2                                 │   │
-│  │  ──────────────────                                  │   │
-│  │  Resource limits (CPU, memory, PIDs)                 │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                          │                                  │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  Layer 1: Namespaces                                 │   │
-│  │  ──────────────────                                  │   │
-│  │  Process, filesystem, network, user isolation        │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                          │                                  │
-└──────────────────────────┼──────────────────────────────────┘
-                           │
-                           ▼
-                    LINUX KERNEL
-```
+### Not Yet In Scope
 
----
+Mini-Docker should not yet be treated as complete protection against:
 
-## Layer 1: Namespaces
+- kernel zero-days
+- sophisticated container escape chains
+- malicious public code execution at internet scale
+- side-channel attacks
+- malicious image supply-chain attacks
+- compromised host root
+- unreviewed multi-tenant production workloads
 
-Namespaces provide resource isolation by giving containers their own view of system resources.
+## Isolation Layers
 
-### Implemented Namespaces
+### 1. Namespaces
 
-| Namespace | Isolates | Attack Prevented |
-|-----------|----------|------------------|
-| **PID** | Process IDs | Can't see/signal host processes |
-| **UTS** | Hostname | Can't discover host identity |
-| **Mount** | Filesystem | Can't access host files |
-| **IPC** | Shared memory | Can't access host IPC |
-| **Network** | Network stack | Can't sniff host network |
-| **User** | UID/GID | Root in container ≠ root on host |
-| **Cgroup** | Cgroup view | Can't see host cgroup structure |
+Mini-Docker uses Linux namespaces to give a container its own view of selected
+system resources.
 
-### Example: PID Isolation
+| Namespace | Purpose |
+| --- | --- |
+| PID | Isolates process IDs and process visibility |
+| UTS | Isolates hostname and domain name |
+| Mount | Isolates mount points and filesystem view |
+| IPC | Isolates System V IPC and POSIX message queues |
+| Network | Isolates interfaces, routes, and ports |
+| User | Maps container users away from host users |
+| Cgroup | Isolates cgroup hierarchy visibility |
 
-```
-HOST VIEW:                      CONTAINER VIEW:
-┌──────────────────────────┐    ┌──────────────────────────┐
-│ PID 1    - systemd       │    │ PID 1    - /bin/sh       │
-│ PID 234  - sshd          │    │ PID 2    - /bin/sleep    │
-│ PID 567  - nginx         │    │                          │
-│ PID 1000 - container     │ => │ (only sees its own PIDs) │
-│   └─ PID 1001 - sh       │    │                          │
-│   └─ PID 1002 - sleep    │    │                          │
-└──────────────────────────┘    └──────────────────────────┘
+### 2. Cgroups v2
+
+Cgroups limit and account for resource usage.
+
+| Resource | Control File | Purpose |
+| --- | --- | --- |
+| CPU | `cpu.max` | Throttle CPU usage |
+| Memory | `memory.max` | Enforce a hard memory ceiling |
+| PIDs | `pids.max` | Limit process count and fork bombs |
+| I/O | `io.max` | Future I/O throttling support |
+
+For PaaS use, cgroup setup must be fail-closed. If limits cannot be installed,
+the workload should not start in a production deployment.
+
+### 3. Filesystem Isolation
+
+Mini-Docker supports OverlayFS for copy-on-write container filesystems and
+falls back to chroot where OverlayFS is unavailable.
+
+OverlayFS is the preferred path for full Linux mode:
+
+```text
+lower/   read-only base rootfs
+upper/   writable container changes
+work/    OverlayFS work directory
+merged/  runtime root view
 ```
 
----
+`pivot_root` is preferred over chroot when available because it removes the old
+root from the workload's view more cleanly.
 
-## Layer 2: Cgroups v2
+### 4. Seccomp-BPF
 
-Cgroups prevent resource exhaustion attacks.
+Mini-Docker builds a seccomp whitelist and denies syscalls not explicitly
+allowed by the policy.
 
-### Resource Limits
+High-risk syscalls intended to stay blocked include:
 
-| Resource | Limit | Protection |
-|----------|-------|------------|
-| **CPU** | Percentage or quota | Prevents CPU monopolization |
-| **Memory** | Hard limit in bytes | Prevents OOM on host |
-| **PIDs** | Maximum process count | Prevents fork bombs |
+- `ptrace`
+- `mount`
+- `umount2`
+- `reboot`
+- `init_module`
+- `finit_module`
+- `kexec_load`
+- `bpf`
+- `perf_event_open`
+- `setns`
+- `unshare`
 
-### Example: Fork Bomb Protection
+For PaaS hardening, seccomp installation failure must stop startup instead of
+falling back silently.
 
-Without cgroups:
-```bash
-:(){ :|:& };:  # Fork bomb crashes the system
-```
+### 5. Capabilities
 
-With pids.max=50:
-```bash
-:(){ :|:& };:  # Fails after 50 processes
-# Container can't create more processes
-```
+Linux capabilities split root privileges into smaller units. Mini-Docker
+reduces the active capability set before workload execution.
 
----
+Capabilities that should not be available to normal app workloads include:
 
-## Layer 3: Seccomp-BPF
+- `CAP_SYS_ADMIN`
+- `CAP_NET_ADMIN`
+- `CAP_SYS_PTRACE`
+- `CAP_SYS_MODULE`
+- `CAP_SYS_RAWIO`
+- `CAP_SYS_BOOT`
+- `CAP_BPF`
+- `CAP_PERFMON`
 
-Seccomp filters syscalls at the kernel level using BPF (Berkeley Packet Filter).
+PaaS workloads should eventually support profiles: minimal, web-service,
+networked-service, and explicit custom capability grants.
 
-### Filter Strategy: Whitelist
+### 6. NO_NEW_PRIVS
 
-```
-┌─────────────────────────────────────────────┐
-│           SYSCALL FILTER                     │
-│                                             │
-│   ┌─────────────────────────────────────┐   │
-│   │         ALLOWED (~60 syscalls)       │   │
-│   │                                      │   │
-│   │  read, write, open, close, stat     │   │
-│   │  mmap, brk, exit, getpid            │   │
-│   │  socket, bind, listen, accept       │   │
-│   │  ...                                │   │
-│   └─────────────────────────────────────┘   │
-│                                             │
-│   ┌─────────────────────────────────────┐   │
-│   │         BLOCKED (everything else)    │   │
-│   │                                      │   │
-│   │  ptrace, mount, reboot, init_module │   │
-│   │  kexec_load, syslog, acct           │   │
-│   │  ...                                │   │
-│   └─────────────────────────────────────┘   │
-│                                             │
-└─────────────────────────────────────────────┘
-```
-
-### Dangerous Syscalls Blocked
-
-| Syscall | Risk |
-|---------|------|
-| `ptrace` | Debug/control other processes |
-| `mount` | Modify filesystem |
-| `reboot` | Shutdown system |
-| `init_module` | Load kernel modules |
-| `kexec_load` | Replace running kernel |
-| `perf_event_open` | Performance monitoring abuse |
-
----
-
-## Layer 4: Capabilities
-
-Linux capabilities break up root privileges into distinct units.
-
-### Capabilities Dropped
-
-| Capability | Risk if Kept |
-|------------|--------------|
-| `CAP_SYS_ADMIN` | Broad system control |
-| `CAP_NET_ADMIN` | Network configuration |
-| `CAP_SYS_PTRACE` | Process tracing |
-| `CAP_SYS_MODULE` | Kernel modules |
-| `CAP_MKNOD` | Create device nodes |
-| `CAP_SYS_RAWIO` | Raw I/O port access |
-| `CAP_SYS_BOOT` | Reboot system |
-| `CAP_DAC_OVERRIDE` | Bypass file permissions |
-
-### Minimal Capability Set
-
-After dropping, container has only:
-- `CAP_CHOWN` - Change file ownership
-- `CAP_SETUID` - Set UID (within namespace)
-- `CAP_SETGID` - Set GID (within namespace)
-- `CAP_KILL` - Send signals (within namespace)
-
----
-
-## Layer 5: NO_NEW_PRIVS
-
-Prevents privilege escalation via setuid binaries.
-
-### How It Works
+`NO_NEW_PRIVS` prevents privilege gains across `execve`, including setuid and
+setgid escalation paths.
 
 ```c
 prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 ```
 
-Once set:
-- Setuid/setgid bits are ignored
-- Ambient capabilities can't be raised
-- Inherited by all child processes
-- Cannot be unset
+This should be enabled before seccomp filter installation and inherited by the
+workload process.
 
-### Attack Prevented
+## Rootless Mode
 
-Without NO_NEW_PRIVS:
-```bash
-# Attacker could exploit setuid binary
-./setuid-root-binary  # Gets root privileges
-```
+Rootless mode uses user namespaces to map an unprivileged host user to root
+inside the container. This reduces host risk but limits some features:
 
-With NO_NEW_PRIVS:
-```bash
-./setuid-root-binary  # Runs as current user, no escalation
-```
+- host-managed bridge networking is unavailable without elevated privileges
+- cgroup enforcement depends on host delegation
+- OverlayFS availability varies by kernel and distribution
 
----
+Rootless mode is useful for development and safer local workloads, but it does
+not automatically solve all multi-tenant security concerns.
 
-## Threat Model
+## PaaS Hardening Checklist
 
-### What Mini-Docker Protects Against
+Before Mini-Docker is exposed to untrusted users, the runtime should have:
 
-| Threat | Protection | Mechanism |
-|--------|------------|-----------|
-| ✅ **Noisy neighbor** | Can't hog resources | Cgroups limits |
-| ✅ **Process snooping** | Can't see host processes | PID namespace |
-| ✅ **Filesystem tampering** | Can't modify host files | Mount namespace + OverlayFS |
-| ✅ **Network sniffing** | Can't see host traffic | Network namespace |
-| ✅ **Fork bomb** | Limited processes | pids.max cgroup |
-| ✅ **Memory exhaustion** | Limited memory | memory.max cgroup |
-| ✅ **Privilege escalation** | Capabilities dropped | NO_NEW_PRIVS |
-| ✅ **Dangerous syscalls** | Blocked at kernel | Seccomp-BPF |
+- fail-closed behavior for namespace, cgroup, seccomp, capability, and mount failures
+- Linux integration tests for root and rootless container startup
+- tests proving cgroup limits actually constrain CPU, memory, and PIDs
+- tests proving seccomp blocks dangerous syscalls
+- deterministic cleanup for failed networking, cgroups, and mounts
+- daemon socket permissions and authentication strategy
+- image/rootfs validation and provenance checks
+- restricted defaults for capabilities and writable mounts
+- host hardening documentation
+- external security review
 
-### What Mini-Docker Does NOT Protect Against
+## Practical Guidance
 
-| Threat | Reason | Mitigation |
-|--------|--------|------------|
-| ❌ **Kernel zero-days** | No hypervisor layer | Keep kernel updated |
-| ❌ **Container escapes** | Not hardened | Use gVisor/Kata for untrusted |
-| ❌ **Side-channel attacks** | No CPU isolation | Use VMs for sensitive data |
-| ❌ **Malicious images** | No image scanning | Scan with trivy/grype |
-| ❌ **Supply chain attacks** | No verification | Use signed images |
-| ❌ **Sophisticated attackers** | Not audited | Don't run untrusted code |
+For now:
 
----
+- use Mini-Docker for controlled servers, self-hosted experiments, and runtime development
+- avoid public arbitrary-code execution until hardening is complete
+- prefer rootless mode where full networking and cgroups are not required
+- use strict resource limits for every workload
+- keep the host kernel updated
+- run workloads under a dedicated server user or dedicated VM where possible
 
-## Security Checklist
-
-When using Mini-Docker, always:
-
-- [ ] **Set resource limits**
-  ```bash
-  --memory 100M --cpu 50 --pids-limit 50
-  ```
-
-- [ ] **Keep kernel updated**
-  - Check for security patches regularly
-  - Use LTS kernel when possible
-
-- [ ] **Don't run untrusted code**
-  - Only run containers you built
-  - Review third-party images
-
-- [ ] **Use rootless when possible**
-  ```bash
-  python3 -m mini_docker run --rootless ./rootfs /bin/sh
-  ```
-
-- [ ] **Monitor container activity**
-  - Check logs for anomalies
-  - Review seccomp violations
-
-- [ ] **Limit capabilities further if possible**
-  - Some workloads need even fewer capabilities
-
----
-
-## Comparison with Production Runtimes
-
-| Feature | Mini-Docker | runc | gVisor | Kata |
-|---------|-------------|------|--------|------|
-| Namespaces | ✅ | ✅ | ✅ | ✅ |
-| Cgroups | ✅ | ✅ | ✅ | ✅ |
-| Seccomp | ✅ | ✅ | ✅ | ✅ |
-| Capabilities | ✅ | ✅ | ✅ | ✅ |
-| Security audit | ❌ | ✅ | ✅ | ✅ |
-| Kernel isolation | ❌ | ❌ | ✅ | ✅ |
-| Production ready | ❌ | ✅ | ✅ | ✅ |
-
----
-
-## Resources
-
-- [Linux Namespaces](https://man7.org/linux/man-pages/man7/namespaces.7.html)
-- [Cgroups v2](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html)
-- [Seccomp-BPF](https://www.kernel.org/doc/html/latest/userspace-api/seccomp_filter.html)
-- [Linux Capabilities](https://man7.org/linux/man-pages/man7/capabilities.7.html)
-- [Container Security Best Practices](https://sysdig.com/learn-cloud-native/container-security-best-practices/)
-
----
-
-## Reporting Security Issues
-
-Found a vulnerability? See [SECURITY.md](../SECURITY.md) for responsible disclosure guidelines.
+Mini-Docker can become a serious PaaS runtime foundation, but security has to
+be proven by behavior and tests, not by docs language.
