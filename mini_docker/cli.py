@@ -16,6 +16,7 @@ Provides Docker-like CLI commands:
     mini-docker images                      - List images
     mini-docker rmi <image>                 - Remove an image
     mini-docker info                        - System information
+    mini-docker doctor                      - Check host compatibility
     mini-docker version                     - Version information
     mini-docker cleanup                     - Clean up resources
 """
@@ -329,6 +330,32 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     # =========================================================================
+    # doctor / check-host command
+    # =========================================================================
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        aliases=["check-host"],
+        help="Check host compatibility and Mini-Docker root/runtime safety",
+    )
+    doctor_parser.add_argument(
+        "--rootless",
+        action="store_true",
+        help="Check rootless runtime requirements instead of root mode",
+    )
+    doctor_parser.add_argument(
+        "--rootfs",
+        default="./rootfs",
+        help="Rootfs path to validate (default: ./rootfs)",
+    )
+    doctor_parser.add_argument(
+        "--format",
+        "-f",
+        choices=["text", "json"],
+        default="text",
+        help="Output format",
+    )
+
+    # =========================================================================
     # version command (NEW)
     # =========================================================================
     version_parser = subparsers.add_parser("version", help="Show version information")
@@ -368,6 +395,16 @@ def create_parser() -> argparse.ArgumentParser:
     )
     cleanup_parser.add_argument(
         "--volumes", action="store_true", help="Remove unused volumes"
+    )
+    cleanup_parser.add_argument(
+        "--runtime",
+        action="store_true",
+        help="Clean Mini-Docker bridge, veth, cgroup, and iptables leftovers",
+    )
+    cleanup_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show cleanup actions without changing host state",
     )
     cleanup_parser.add_argument(
         "--force", "-f", action="store_true", help="Do not prompt for confirmation"
@@ -1089,6 +1126,43 @@ def cmd_info(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Handle doctor/check-host command."""
+    from mini_docker.host import FAIL, WARN, collect_host_report
+
+    report = collect_host_report(rootless=args.rootless, rootfs_path=args.rootfs)
+
+    if args.format == "json":
+        print(json.dumps(report, indent=2))
+        return 0 if report["ok"] else 1
+
+    print(f"Mini-Docker host check ({report['mode']} mode)")
+    print("=" * 40)
+
+    for check in report["checks"]:
+        marker = {
+            "ok": "OK",
+            "warn": "WARN",
+            "fail": "FAIL",
+            "skip": "SKIP",
+        }.get(check["status"], check["status"].upper())
+        print(f"{marker:<5} {check['name']:<24} {check['detail']}")
+        if check.get("fix"):
+            print(f"      fix: {check['fix']}")
+
+    print("")
+    print("Rootless mode is safer for WSL/dev smoke tests.")
+    print("Root mode may touch:")
+    for touch in report["host_touches"]:
+        print(f"  - {touch['resource']}: {touch['purpose']}")
+
+    if any(check["status"] == FAIL for check in report["checks"]):
+        return 1
+    if any(check["status"] == WARN for check in report["checks"]):
+        return 2
+    return 0
+
+
 def cmd_version(args: argparse.Namespace) -> int:
     """Handle version command."""
     import platform
@@ -1134,16 +1208,27 @@ def cmd_daemon(args: argparse.Namespace) -> int:
 
 def cmd_cleanup(args: argparse.Namespace) -> int:
     """Handle cleanup command - remove unused resources."""
-    from mini_docker.container import Container
     from mini_docker.image_builder import list_images
+    from mini_docker.host import cleanup_runtime_resources
     from mini_docker.utils import OVERLAY_PATH
 
     # Confirm unless --force
-    if not args.force and not args.all and not args.containers and not args.images:
+    no_targets = not any(
+        [
+            args.all,
+            args.containers,
+            args.images,
+            args.volumes,
+            args.runtime,
+        ]
+    )
+
+    if not args.force and no_targets:
         print("This will remove:")
         print("  - All stopped containers")
         print("  - All unused images")
         print("  - All unused volumes")
+        print("  - No host runtime resources unless --runtime is passed")
         print("")
         response = input("Are you sure? [y/N] ")
         if response.lower() not in ("y", "yes"):
@@ -1151,15 +1236,28 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
             return 0
         args.all = True
 
+    if args.runtime and not args.force and not args.dry_run:
+        print("Runtime cleanup may remove Mini-Docker host resources:")
+        print("  - mini-docker0 bridge when no containers are running")
+        print("  - Mini-Docker veth interfaces from stopped containers")
+        print("  - Empty Mini-Docker cgroups")
+        print("  - Mini-Docker iptables NAT/published-port rules")
+        print("")
+        response = input("Proceed with runtime cleanup? [y/N] ")
+        if response.lower() not in ("y", "yes"):
+            print("Cancelled.")
+            return 0
+
     removed_containers = 0
     removed_images = 0
     removed_volumes = 0
-    reclaimed_space = 0
-
-    container = Container()
+    runtime_report = None
 
     # Clean containers
     if args.all or args.containers:
+        from mini_docker.container import Container
+
+        container = Container()
         all_containers = container.list(all_containers=True)
         for c in all_containers:
             if c.status != "running":
@@ -1189,9 +1287,26 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
                     except Exception:
                         pass
 
+    if args.runtime:
+        runtime_report = cleanup_runtime_resources(dry_run=args.dry_run)
+
     print(f"Removed {removed_containers} container(s)")
     print(f"Removed {removed_images} image(s)")
     print(f"Removed {removed_volumes} volume(s)")
+
+    if runtime_report:
+        mode = "planned" if runtime_report["dry_run"] else "applied"
+        print(f"Runtime cleanup ({mode}):")
+        for operation in runtime_report["operations"]:
+            print(
+                f"  {operation['status']:<7} "
+                f"{operation['action']:<20} {operation['target']}"
+            )
+            if operation.get("detail"):
+                print(f"          {operation['detail']}")
+
+        if not runtime_report["ok"]:
+            return 1
 
     return 0
 
@@ -1226,6 +1341,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "images": cmd_images,
         "rmi": cmd_rmi,
         "info": cmd_info,
+        "doctor": cmd_doctor,
+        "check-host": cmd_doctor,
         "version": cmd_version,
         "daemon": cmd_daemon,
         "cleanup": cmd_cleanup,

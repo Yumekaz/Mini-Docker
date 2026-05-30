@@ -67,3 +67,22 @@ def test_setup_port_forwarding_raises_on_iptables_failure(monkeypatch):
 
     with pytest.raises(network.NetworkError, match="iptables failed"):
         network.setup_port_forwarding(8080, 80, "10.0.0.2")
+
+
+def test_remove_nat_uses_non_failing_delete(monkeypatch):
+    calls = []
+
+    def fake_iptables(args, check=True):
+        calls.append((args, check))
+        return subprocess.CompletedProcess(["iptables"] + args, 1)
+
+    monkeypatch.setattr("mini_docker.network.run_iptables_command", fake_iptables)
+
+    network.remove_nat("10.0.0.0/24")
+
+    assert calls == [
+        (
+            ["-t", "nat", "-D", "POSTROUTING", "-s", "10.0.0.0/24", "-j", "MASQUERADE"],
+            False,
+        )
+    ]

@@ -327,6 +327,14 @@ def setup_nat(subnet: str = BRIDGE_SUBNET) -> None:
         raise NetworkError(f"Failed to set up NAT for {subnet}: {e}") from e
 
 
+def remove_nat(subnet: str = BRIDGE_SUBNET) -> None:
+    """Remove the Mini-Docker NAT MASQUERADE rule if it exists."""
+    run_iptables_command(
+        ["-t", "nat", "-D", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE"],
+        check=False,
+    )
+
+
 def setup_container_networking(
     container_id: str, container_pid: int, ip_address: Optional[str] = None
 ) -> Tuple[str, str, str]:

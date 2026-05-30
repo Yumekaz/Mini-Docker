@@ -131,6 +131,25 @@ Start the daemon for a PaaS control plane:
 sudo python3 -m mini_docker daemon --socket /var/run/mini-docker.sock
 ```
 
+Check host compatibility before running root-mode containers:
+
+```bash
+python3 -m mini_docker doctor --rootless
+python3 -m mini_docker doctor
+```
+
+Preview cleanup of Mini-Docker runtime leftovers:
+
+```bash
+python3 -m mini_docker cleanup --runtime --dry-run
+```
+
+Repair only the bundled rootfs without touching host networking or cgroups:
+
+```bash
+./scripts/setup.sh --rootfs-only
+```
+
 Supported daemon endpoints include:
 
 - `GET /containers/json`
