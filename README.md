@@ -74,13 +74,28 @@ Container process
 | --- | --- |
 | OS | Linux |
 | Kernel | 4.18+ recommended |
-| Python | 3.7+ |
+| Python | 3.8+ |
 | Privileges | root for full mode, user namespaces for rootless mode |
 | System tools | `ip`, `iptables`, `mount`, `chroot` for full feature paths |
 
 Windows is fine for editing and pure Python checks, but real runtime behavior
 must be validated on Linux because the project depends on Linux-only kernel
 features.
+
+## Development Setup
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -e ".[dev]"
+pytest
+```
+
+The package installs a `mini-docker` console command:
+
+```bash
+mini-docker --help
+```
 
 ## Quick Start
 
@@ -148,6 +163,12 @@ Repair only the bundled rootfs without touching host networking or cgroups:
 
 ```bash
 ./scripts/setup.sh --rootfs-only
+```
+
+Run the WSL-safe rootless smoke test:
+
+```bash
+scripts/runtime-smoke.sh --rootless
 ```
 
 Supported daemon endpoints include:

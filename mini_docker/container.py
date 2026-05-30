@@ -379,9 +379,7 @@ class Container:
                         from mini_docker.network import setup_port_forwarding
 
                         for port_mapping in config.network.ports:
-                            host_port, container_port = parse_port_mapping(
-                                port_mapping
-                            )
+                            host_port, container_port = parse_port_mapping(port_mapping)
                             setup_port_forwarding(host_port, container_port, ip)
                             configured_port_forwards.append(
                                 (host_port, container_port, ip)
@@ -588,7 +586,11 @@ class Container:
         detached_log_fd: Optional[int],
     ) -> None:
         """Prepare the container root, security policy, stdio, and exec."""
+        devnull_fd = None
         try:
+            if not attach and not config.interactive:
+                devnull_fd = os.open(os.devnull, os.O_RDONLY)
+
             # Set up filesystem
             rootfs_to_pivot = config.rootfs
 
@@ -673,9 +675,9 @@ class Container:
                     os.close(detached_log_fd)
 
                 if not config.interactive:
-                    devnull_fd = os.open(os.devnull, os.O_RDONLY)
                     os.dup2(devnull_fd, sys.stdin.fileno())
                     os.close(devnull_fd)
+                    devnull_fd = None
 
             self._exec_workload(config)
 
@@ -683,6 +685,12 @@ class Container:
             logger.write(f"Container setup failed: {e}\n")
             logger.close()
             raise
+        finally:
+            if devnull_fd is not None:
+                try:
+                    os.close(devnull_fd)
+                except OSError:
+                    pass
 
     def _setup_cgroup(
         self, config: ContainerConfig, logger: ContainerLogger
@@ -1156,9 +1164,7 @@ class Container:
 
                 for port_mapping in config.network.ports:
                     host_port, container_port = parse_port_mapping(port_mapping)
-                    remove_port_forwarding(
-                        host_port, container_port, config.network.ip
-                    )
+                    remove_port_forwarding(host_port, container_port, config.network.ip)
             except Exception as e:
                 errors.append(f"Port forwarding cleanup: {e}")
 
@@ -1177,9 +1183,7 @@ class Container:
             try:
                 delete_cgroup(cgroup_path)
                 if os.path.exists(cgroup_path):
-                    errors.append(
-                        f"Cgroup cleanup: cgroup still exists: {cgroup_path}"
-                    )
+                    errors.append(f"Cgroup cleanup: cgroup still exists: {cgroup_path}")
             except Exception as e:
                 errors.append(f"Cgroup cleanup: {e}")
 

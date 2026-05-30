@@ -22,10 +22,8 @@ from mini_docker.container import (
     ContainerInvalidStateError,
     ContainerNotFoundError,
 )
-from mini_docker.metadata import asdict
-from mini_docker.metadata import ContainerLookupAmbiguityError
+from mini_docker.metadata import ContainerLookupAmbiguityError, asdict
 from mini_docker.utils import DEFAULT_SOCKET_PATH, ensure_directories
-
 
 if hasattr(socketserver, "UnixStreamServer"):
 

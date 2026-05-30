@@ -4,7 +4,6 @@ import sys
 
 import pytest
 
-
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="Mini-Docker runtime integration requires Linux"
 )

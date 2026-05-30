@@ -388,17 +388,13 @@ def _cleanup_container_runtime(
                 continue
 
             try:
-                remove_port_forwarding(
-                    host_port, container_port, container.network.ip
-                )
+                remove_port_forwarding(host_port, container_port, container.network.ip)
                 operations.append(_operation("cleanup-port", target, OK))
             except Exception as e:
                 operations.append(_operation("cleanup-port", target, FAIL, str(e)))
 
     if container.network.veth_host:
-        operations.append(
-            _cleanup_veth(container.network.veth_host, dry_run=dry_run)
-        )
+        operations.append(_cleanup_veth(container.network.veth_host, dry_run=dry_run))
 
     cgroup_path = os.path.join(MINI_DOCKER_CGROUP, container.id)
     operations.append(_cleanup_empty_cgroup(cgroup_path, dry_run=dry_run))

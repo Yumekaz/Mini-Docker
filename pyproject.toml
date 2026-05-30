@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mini-docker-runtime"
+version = "1.0.0"
+description = "A lightweight Linux container runtime built from scratch in Python"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+authors = [
+  { name = "Mihir Swarnkar", email = "mihir.swarnkar722@gmail.com" },
+]
+keywords = ["containers", "runtime", "linux", "paas", "namespaces", "cgroups"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: System :: Operating System Kernels :: Linux",
+  "Topic :: System :: Systems Administration",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-cov>=5",
+  "black>=24",
+  "flake8>=7",
+  "isort>=5",
+  "mypy>=1",
+  "bandit>=1.7",
+  "build>=1",
+  "twine>=5",
+]
+
+[project.scripts]
+mini-docker = "mini_docker.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Yumekaz/Mini-Docker"
+Repository = "https://github.com/Yumekaz/Mini-Docker"
+Issues = "https://github.com/Yumekaz/Mini-Docker/issues"
+
+[tool.setuptools.packages.find]
+include = ["mini_docker*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.black]
+line-length = 88
+target-version = ["py38"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.8"
+ignore_missing_imports = true
+no_error_summary = true

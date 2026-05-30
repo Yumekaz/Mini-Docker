@@ -23,7 +23,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-lint-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-lint-${{ hashFiles('pyproject.toml') }}
           restore-keys: |
             ${{ runner.os }}-pip-lint-
             ${{ runner.os }}-pip-
@@ -31,17 +31,18 @@ jobs:
       - name: Install linting tools
         run: |
           python -m pip install --upgrade pip
-          pip install black flake8 isort mypy
+          pip install -e ".[dev]"
 
       # Format check (strict)
       - name: Check formatting with Black
         run: |
-          black --check --diff mini_docker/ tests/
+          find mini_docker tests -name "*.py" -print0 \
+            | xargs -0 -n1 black --check --diff --no-cache
 
-      # Import sorting (auto-fix, no failure)
-      - name: Run isort
+      # Import sorting
+      - name: Check import sorting with isort
         run: |
-          isort mini_docker/ tests/
+          isort --check-only --diff mini_docker/ tests/
 
       # Lint for real errors
       - name: Lint with flake8 (errors only)
@@ -80,7 +81,9 @@ jobs:
           python-version: "3.10"
 
       - name: Install bandit
-        run: pip install bandit
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
 
       - name: Run security check
         run: |

@@ -1208,8 +1208,8 @@ def cmd_daemon(args: argparse.Namespace) -> int:
 
 def cmd_cleanup(args: argparse.Namespace) -> int:
     """Handle cleanup command - remove unused resources."""
-    from mini_docker.image_builder import list_images
     from mini_docker.host import cleanup_runtime_resources
+    from mini_docker.image_builder import list_images
     from mini_docker.utils import OVERLAY_PATH
 
     # Confirm unless --force

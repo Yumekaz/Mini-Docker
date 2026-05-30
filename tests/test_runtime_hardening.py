@@ -122,9 +122,7 @@ def test_try_reap_process_maps_reaped_status(monkeypatch):
 def test_requested_cgroup_limit_write_failure_raises(monkeypatch, tmp_path):
     from mini_docker.cgroups import CgroupError, set_memory_limit
 
-    monkeypatch.setattr(
-        "mini_docker.cgroups.write_file", lambda path, content: False
-    )
+    monkeypatch.setattr("mini_docker.cgroups.write_file", lambda path, content: False)
 
     with pytest.raises(CgroupError, match="Failed to set memory limit"):
         set_memory_limit(str(tmp_path), 128 * 1024 * 1024)
@@ -144,9 +142,7 @@ def test_finalize_stopped_container_cleans_runtime_and_network_metadata(monkeypa
     refreshed.network.veth_host = config.network.veth_host
     refreshed.network.veth_container = config.network.veth_container
 
-    monkeypatch.setattr(
-        "mini_docker.container.update_container_status", update_status
-    )
+    monkeypatch.setattr("mini_docker.container.update_container_status", update_status)
     monkeypatch.setattr(
         "mini_docker.container.load_container_config", lambda _container_id: refreshed
     )
@@ -155,9 +151,7 @@ def test_finalize_stopped_container_cleans_runtime_and_network_metadata(monkeypa
     manager = Container.__new__(Container)
     manager._cleanup_runtime_resources = mock.Mock(return_value=[])
 
-    assert (
-        manager._finalize_stopped_container(config.id, config, exit_code=0) is True
-    )
+    assert manager._finalize_stopped_container(config.id, config, exit_code=0) is True
 
     update_status.assert_called_once_with(config.id, "stopped", exit_code=0)
     manager._cleanup_runtime_resources.assert_called_once_with(config)

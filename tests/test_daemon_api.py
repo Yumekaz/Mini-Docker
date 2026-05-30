@@ -1,7 +1,6 @@
 from unittest import mock
 
-from mini_docker.daemon import DockerAPIHandler
-from mini_docker.daemon import run_daemon
+from mini_docker.daemon import DockerAPIHandler, run_daemon
 
 
 def _make_handler(path: str):
