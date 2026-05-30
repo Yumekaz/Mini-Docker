@@ -46,7 +46,7 @@ from mini_docker.namespaces import (
     enter_all_namespaces,
     setup_user_namespace,
 )
-from mini_docker.network import Network, configure_container_network
+from mini_docker.network import Network, configure_container_network, parse_port_mapping
 from mini_docker.pod import PodManager, load_pod_config
 from mini_docker.seccomp import Seccomp
 from mini_docker.utils import check_root, ensure_directories, get_overlay_paths
@@ -98,6 +98,22 @@ def _write_config_to_fd(fd: int, config: ContainerConfig) -> None:
     os.lseek(fd, 0, os.SEEK_SET)
     os.ftruncate(fd, 0)
     os.write(fd, payload)
+
+
+def _try_reap_process(pid: int) -> Optional[int]:
+    """Return a process exit code if this process can reap pid, otherwise None."""
+    try:
+        reaped_pid, status = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        return None
+    except OSError as e:
+        if e.errno == errno.ECHILD:
+            return None
+        raise
+
+    if reaped_pid == 0:
+        return None
+    return _exit_code_from_wait_status(status)
 
 
 class Container:
@@ -213,6 +229,11 @@ class Container:
             namespaces=namespaces,
         )
         if ports:
+            for port_mapping in ports:
+                try:
+                    parse_port_mapping(port_mapping)
+                except Exception as e:
+                    raise ContainerInvalidRequestError(str(e)) from e
             config.network.ports = ports
 
         # Set up overlay paths if using overlay
@@ -358,9 +379,9 @@ class Container:
                         from mini_docker.network import setup_port_forwarding
 
                         for port_mapping in config.network.ports:
-                            host_port_str, container_port_str = port_mapping.split(":")
-                            host_port = int(host_port_str)
-                            container_port = int(container_port_str)
+                            host_port, container_port = parse_port_mapping(
+                                port_mapping
+                            )
                             setup_port_forwarding(host_port, container_port, ip)
                             configured_port_forwards.append(
                                 (host_port, container_port, ip)
@@ -826,9 +847,7 @@ class Container:
         # setup behaves like a full lifecycle reboot.
         refreshed_config = load_container_config(container_id)
         if refreshed_config and refreshed_config.network:
-            refreshed_config.network.ip = None
-            refreshed_config.network.veth_host = None
-            refreshed_config.network.veth_container = None
+            self._clear_network_runtime_metadata(refreshed_config)
             save_container_config(refreshed_config)
 
         # We start it detached by default when restarting
@@ -853,8 +872,7 @@ class Container:
             raise ContainerInvalidStateError(f"Container not running: {container_id}")
 
         if not config.pid:
-            update_container_status(container_id, "stopped")
-            return True
+            return self._finalize_stopped_container(container_id, config)
 
         try:
             # Check if process exists before sending signal
@@ -862,59 +880,62 @@ class Container:
                 os.kill(config.pid, 0)  # Check if process exists
             except OSError as e:
                 if e.errno == errno.ESRCH:  # No such process
-                    update_container_status(container_id, "stopped")
-                    return True
+                    return self._finalize_stopped_container(
+                        container_id, config, exit_code=0
+                    )
                 raise
 
             # Send SIGTERM
             os.kill(config.pid, signal.SIGTERM)
 
-            # Wait for process to exit
+            # Wait for process to exit. Reap direct children during the grace
+            # window; kill(pid, 0) remains true for zombies.
             import time
 
-            for _ in range(timeout * 10):
+            exit_code = None
+            for _ in range(max(timeout, 0) * 10):
+                exit_code = _try_reap_process(config.pid)
+                if exit_code is not None:
+                    break
+
                 try:
                     os.kill(config.pid, 0)
-                    time.sleep(0.1)
                 except OSError as e:
                     if e.errno == errno.ESRCH:
+                        exit_code = 0
                         break
                     raise
-            else:
+
+                time.sleep(0.1)
+
+            if exit_code is None:
                 # Process still running, send SIGKILL
                 try:
                     os.kill(config.pid, signal.SIGKILL)
                 except OSError as e:
                     if e.errno != errno.ESRCH:
                         raise
+                    exit_code = 0
 
-            # Proper waitpid handling with WNOHANG loop
-            exit_code = 0
-            try:
-                # Try to reap the zombie process
                 for _ in range(10):
-                    pid, status = os.waitpid(config.pid, os.WNOHANG)
-                    if pid != 0:
-                        exit_code = (
-                            os.WEXITSTATUS(status) if os.WIFEXITED(status) else -1
-                        )
+                    reaped_exit_code = _try_reap_process(config.pid)
+                    if reaped_exit_code is not None:
+                        exit_code = reaped_exit_code
                         break
                     time.sleep(0.1)
-            except ChildProcessError:
-                # Process was already reaped by init or doesn't exist
-                pass
-            except OSError as e:
-                if e.errno != errno.ECHILD:
-                    raise
 
-            update_container_status(container_id, "stopped", exit_code=exit_code)
+                if exit_code is None:
+                    exit_code = 128 + signal.SIGKILL
 
-            return True
+            return self._finalize_stopped_container(
+                container_id, config, exit_code=exit_code
+            )
 
         except OSError as e:
             if e.errno == errno.ESRCH:  # No such process
-                update_container_status(container_id, "stopped")
-                return True
+                return self._finalize_stopped_container(
+                    container_id, config, exit_code=0
+                )
             raise ContainerInternalError(f"Failed to stop container: {e}")
 
     def remove(
@@ -953,30 +974,7 @@ class Container:
             except Exception as e:
                 errors.append(f"Overlay cleanup: {e}")
 
-        # Clean up cgroup
-        from mini_docker.cgroups import MINI_DOCKER_CGROUP
-
-        cgroup_path = os.path.join(MINI_DOCKER_CGROUP, config.id)
-        try:
-            delete_cgroup(cgroup_path)
-        except Exception as e:
-            errors.append(f"Cgroup cleanup: {e}")
-
-        # Clean up networking
-        try:
-            if config.network_enabled and config.network.ports and config.network.ip:
-                from mini_docker.network import remove_port_forwarding
-
-                for port_mapping in config.network.ports:
-                    host_port_str, container_port_str = port_mapping.split(":")
-                    remove_port_forwarding(
-                        int(host_port_str), int(container_port_str), config.network.ip
-                    )
-
-            network = Network(config.id)
-            network.cleanup()
-        except Exception as e:
-            errors.append(f"Network cleanup: {e}")
+        errors.extend(self._cleanup_runtime_resources(config))
 
         # Remove from pod if applicable
         if config.pod_id:
@@ -1114,3 +1112,75 @@ class Container:
             raise ContainerNotFoundError(f"Container not found: {container_id}")
 
         print_logs(config.id, follow=follow, tail=tail, timestamps=timestamps)
+
+    def _clear_network_runtime_metadata(self, config: ContainerConfig) -> None:
+        """Clear host-assigned network values that are valid for one start only."""
+        config.network.ip = None
+        config.network.veth_host = None
+        config.network.veth_container = None
+
+    def _finalize_stopped_container(
+        self,
+        container_id: str,
+        config: ContainerConfig,
+        exit_code: Optional[int] = None,
+    ) -> bool:
+        """Persist stopped state and release one-start runtime resources."""
+        update_container_status(container_id, "stopped", exit_code=exit_code)
+
+        cleanup_errors = self._cleanup_runtime_resources(config)
+        if not any(
+            error.startswith(("Port forwarding cleanup", "Network cleanup"))
+            for error in cleanup_errors
+        ):
+            refreshed_config = load_container_config(container_id)
+            if refreshed_config and refreshed_config.network:
+                self._clear_network_runtime_metadata(refreshed_config)
+                save_container_config(refreshed_config)
+
+        if cleanup_errors:
+            raise ContainerInternalError(
+                "Container stopped, but runtime cleanup failed: "
+                + "; ".join(cleanup_errors)
+            )
+
+        return True
+
+    def _cleanup_runtime_resources(self, config: ContainerConfig) -> List[str]:
+        """Clean up host-side runtime resources while preserving container state."""
+        errors = []
+
+        if config.network.ports and config.network.ip:
+            try:
+                from mini_docker.network import remove_port_forwarding
+
+                for port_mapping in config.network.ports:
+                    host_port, container_port = parse_port_mapping(port_mapping)
+                    remove_port_forwarding(
+                        host_port, container_port, config.network.ip
+                    )
+            except Exception as e:
+                errors.append(f"Port forwarding cleanup: {e}")
+
+        if config.network_enabled or config.network.veth_host or config.network.ip:
+            try:
+                network = Network(config.id)
+                network.veth_host = config.network.veth_host
+                network.cleanup()
+            except Exception as e:
+                errors.append(f"Network cleanup: {e}")
+
+        if not config.rootless:
+            from mini_docker.cgroups import MINI_DOCKER_CGROUP
+
+            cgroup_path = os.path.join(MINI_DOCKER_CGROUP, config.id)
+            try:
+                delete_cgroup(cgroup_path)
+                if os.path.exists(cgroup_path):
+                    errors.append(
+                        f"Cgroup cleanup: cgroup still exists: {cgroup_path}"
+                    )
+            except Exception as e:
+                errors.append(f"Cgroup cleanup: {e}")
+
+        return errors

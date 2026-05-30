@@ -6,6 +6,7 @@ from mini_docker.container import (
     Container,
     ContainerInternalError,
     _exit_code_from_wait_status,
+    _try_reap_process,
 )
 from mini_docker.metadata import ContainerConfig
 
@@ -98,3 +99,69 @@ def test_seccomp_setup_respects_disabled_policy(monkeypatch):
 
 def test_wait_status_exit_code_mapping_for_normal_exit():
     assert _exit_code_from_wait_status(7 << 8) == 7
+
+
+def test_wait_status_exit_code_mapping_for_signal():
+    assert _exit_code_from_wait_status(9) == 137
+
+
+def test_try_reap_process_returns_none_when_child_still_running(monkeypatch):
+    monkeypatch.setattr("mini_docker.container.os.waitpid", lambda pid, flags: (0, 0))
+
+    assert _try_reap_process(1234) is None
+
+
+def test_try_reap_process_maps_reaped_status(monkeypatch):
+    monkeypatch.setattr(
+        "mini_docker.container.os.waitpid", lambda pid, flags: (pid, 7 << 8)
+    )
+
+    assert _try_reap_process(1234) == 7
+
+
+def test_requested_cgroup_limit_write_failure_raises(monkeypatch, tmp_path):
+    from mini_docker.cgroups import CgroupError, set_memory_limit
+
+    monkeypatch.setattr(
+        "mini_docker.cgroups.write_file", lambda path, content: False
+    )
+
+    with pytest.raises(CgroupError, match="Failed to set memory limit"):
+        set_memory_limit(str(tmp_path), 128 * 1024 * 1024)
+
+
+def test_finalize_stopped_container_cleans_runtime_and_network_metadata(monkeypatch):
+    update_status = mock.Mock()
+    save_config = mock.Mock()
+
+    config = ContainerConfig(rootfs="/rootfs", command=["/bin/sh"])
+    config.network.ip = "10.0.0.2"
+    config.network.veth_host = "veth1234"
+    config.network.veth_container = "eth0"
+
+    refreshed = ContainerConfig(id=config.id, rootfs="/rootfs", command=["/bin/sh"])
+    refreshed.network.ip = config.network.ip
+    refreshed.network.veth_host = config.network.veth_host
+    refreshed.network.veth_container = config.network.veth_container
+
+    monkeypatch.setattr(
+        "mini_docker.container.update_container_status", update_status
+    )
+    monkeypatch.setattr(
+        "mini_docker.container.load_container_config", lambda _container_id: refreshed
+    )
+    monkeypatch.setattr("mini_docker.container.save_container_config", save_config)
+
+    manager = Container.__new__(Container)
+    manager._cleanup_runtime_resources = mock.Mock(return_value=[])
+
+    assert (
+        manager._finalize_stopped_container(config.id, config, exit_code=0) is True
+    )
+
+    update_status.assert_called_once_with(config.id, "stopped", exit_code=0)
+    manager._cleanup_runtime_resources.assert_called_once_with(config)
+    assert refreshed.network.ip is None
+    assert refreshed.network.veth_host is None
+    assert refreshed.network.veth_container is None
+    save_config.assert_called_once_with(refreshed)

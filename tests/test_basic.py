@@ -6,6 +6,7 @@ so comprehensive testing requires a properly configured Linux environment.
 """
 
 import os
+import runpy
 import sys
 
 import pytest
@@ -92,6 +93,17 @@ class TestImports:
         from mini_docker import cli
 
         assert cli is not None
+
+    def test_module_entrypoint_propagates_exit_code(self, monkeypatch):
+        """Test python -m mini_docker exits with the CLI return code."""
+        import mini_docker.cli as cli
+
+        monkeypatch.setattr(cli, "main", lambda: 42)
+
+        with pytest.raises(SystemExit) as exc:
+            runpy.run_module("mini_docker", run_name="__main__")
+
+        assert exc.value.code == 42
 
 
 class TestPlatform:

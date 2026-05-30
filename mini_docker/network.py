@@ -36,7 +36,6 @@ Network Architecture:
 
 import os
 import subprocess
-import sys
 from typing import Optional, Tuple
 
 from mini_docker.utils import generate_mac_address, get_available_ip
@@ -52,6 +51,42 @@ class NetworkError(Exception):
     """Exception raised for network operations."""
 
     pass
+
+
+def parse_port_mapping(port_mapping: str) -> Tuple[int, int]:
+    """
+    Parse and validate a hostPort:containerPort mapping.
+
+    Args:
+        port_mapping: Port mapping in "hostPort:containerPort" format
+
+    Returns:
+        Tuple of (host_port, container_port)
+
+    Raises:
+        NetworkError: If the mapping is malformed or outside TCP port range
+    """
+    parts = port_mapping.split(":")
+    if len(parts) != 2:
+        raise NetworkError(
+            f"Invalid port mapping '{port_mapping}': expected hostPort:containerPort"
+        )
+
+    try:
+        host_port = int(parts[0])
+        container_port = int(parts[1])
+    except ValueError as e:
+        raise NetworkError(
+            f"Invalid port mapping '{port_mapping}': ports must be integers"
+        ) from e
+
+    for label, port in (("host", host_port), ("container", container_port)):
+        if port < 1 or port > 65535:
+            raise NetworkError(
+                f"Invalid port mapping '{port_mapping}': {label} port out of range"
+            )
+
+    return host_port, container_port
 
 
 def run_ip_command(args: list, check: bool = True) -> subprocess.CompletedProcess:
@@ -224,10 +259,10 @@ def setup_port_forwarding(
             capture_output=True,
         )
     except subprocess.CalledProcessError as e:
-        print(
-            f"Warning: Failed to setup port forwarding {host_port}->{container_port}: {e.stderr.decode()}",
-            file=sys.stderr,
-        )
+        stderr = e.stderr.decode() if e.stderr else str(e)
+        raise NetworkError(
+            f"Failed to setup port forwarding {host_port}->{container_port}: {stderr}"
+        ) from e
 
 
 def remove_port_forwarding(
@@ -276,20 +311,20 @@ def setup_nat(subnet: str = BRIDGE_SUBNET) -> None:
     except (IOError, PermissionError):
         pass
 
-    # Add NAT rule (MASQUERADE)
+    # Add NAT rule (MASQUERADE) if it is missing.
+    check_rule = run_iptables_command(
+        ["-t", "nat", "-C", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE"],
+        check=False,
+    )
+    if check_rule.returncode == 0:
+        return
+
     try:
         run_iptables_command(
-            ["-t", "nat", "-C", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE"],
-            check=False,
+            ["-t", "nat", "-A", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE"]
         )
-    except subprocess.CalledProcessError:
-        # Rule doesn't exist, add it
-        try:
-            run_iptables_command(
-                ["-t", "nat", "-A", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE"]
-            )
-        except subprocess.CalledProcessError:
-            pass
+    except subprocess.CalledProcessError as e:
+        raise NetworkError(f"Failed to set up NAT for {subnet}: {e}") from e
 
 
 def setup_container_networking(

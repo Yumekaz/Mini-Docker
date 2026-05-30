@@ -151,8 +151,7 @@ def set_cpu_limit(cgroup_path: str, quota_us: int, period_us: int = 100000) -> N
     cpu_max = os.path.join(cgroup_path, "cpu.max")
     value = f"{quota_us} {period_us}"
     if not write_file(cpu_max, value):
-        # cpu controller might not be available
-        pass
+        raise CgroupError(f"Failed to set CPU limit in {cpu_max}")
 
 
 def set_memory_limit(cgroup_path: str, limit_bytes: int) -> None:
@@ -171,8 +170,7 @@ def set_memory_limit(cgroup_path: str, limit_bytes: int) -> None:
     """
     memory_max = os.path.join(cgroup_path, "memory.max")
     if not write_file(memory_max, str(limit_bytes)):
-        # memory controller might not be available
-        pass
+        raise CgroupError(f"Failed to set memory limit in {memory_max}")
 
 
 def set_pids_limit(cgroup_path: str, max_pids: int) -> None:
@@ -191,8 +189,7 @@ def set_pids_limit(cgroup_path: str, max_pids: int) -> None:
     """
     pids_max = os.path.join(cgroup_path, "pids.max")
     if not write_file(pids_max, str(max_pids)):
-        # pids controller might not be available
-        pass
+        raise CgroupError(f"Failed to set PID limit in {pids_max}")
 
 
 def set_io_limit(
@@ -220,7 +217,8 @@ def set_io_limit(
         parts.append(f"wbps={wbps}")
 
     value = " ".join(parts)
-    write_file(io_max, value)
+    if not write_file(io_max, value):
+        raise CgroupError(f"Failed to set I/O limit in {io_max}")
 
 
 def get_memory_usage(cgroup_path: str) -> int:
