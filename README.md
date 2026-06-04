@@ -171,6 +171,11 @@ Run the WSL-safe rootless smoke test:
 scripts/runtime-smoke.sh --rootless
 ```
 
+If you do not have a separate Linux VM, use the manual GitHub Actions workflow
+`Root Runtime Validation` to test the root-mode path on an Ubuntu runner. It is
+not triggered on push or pull request, and it keeps Mini-Docker state under
+guarded `/tmp/mini-docker-root-runtime` paths.
+
 Supported daemon endpoints include:
 
 - `GET /containers/json`

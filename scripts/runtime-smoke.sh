@@ -63,7 +63,8 @@ fi
 STATE_DIR="$(mktemp -d /tmp/mini-docker-smoke.XXXXXX)"
 RUN_DIR="${STATE_DIR}/run"
 ROOT_DIR="${STATE_DIR}/root"
-mkdir -p "$RUN_DIR" "$ROOT_DIR"
+SMOKE_ROOTFS="${STATE_DIR}/rootfs"
+mkdir -p "$RUN_DIR" "$ROOT_DIR" "$SMOKE_ROOTFS"
 
 cleanup() {
     if [ "$KEEP_STATE" -eq 1 ]; then
@@ -76,6 +77,14 @@ trap cleanup EXIT
 
 export MINI_DOCKER_ROOT="$ROOT_DIR"
 export MINI_DOCKER_RUN="$RUN_DIR"
+
+if [ ! -d "$ROOTFS" ]; then
+    echo "Rootfs not found: $ROOTFS" >&2
+    exit 1
+fi
+
+cp -a "$ROOTFS"/. "$SMOKE_ROOTFS"/
+ROOTFS="$SMOKE_ROOTFS"
 
 BASE_CMD=(python3 -m mini_docker)
 RUN_FLAGS=(--no-overlay)

@@ -1,0 +1,276 @@
+name: Root Runtime Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: root-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  root-runtime:
+    name: Root-mode runtime smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      STATE_BASE: /tmp/mini-docker-root-runtime
+      MINI_DOCKER_ROOT: /tmp/mini-docker-root-runtime/root
+      MINI_DOCKER_RUN: /tmp/mini-docker-root-runtime/run
+      SMOKE_ROOTFS: /tmp/mini-docker-root-runtime/rootfs
+      PYTHONPATH: ${{ github.workspace }}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve Python runtime
+        run: |
+          set -euo pipefail
+          python -m mini_docker --help > /dev/null
+          echo "PYTHON_BIN=$(command -v python)" >> "$GITHUB_ENV"
+
+      - name: Prepare isolated runtime paths
+        run: |
+          set -euo pipefail
+
+          require_tmp_path() {
+            case "$1" in
+              /tmp/mini-docker-root-runtime|/tmp/mini-docker-root-runtime/*) ;;
+              *)
+                echo "::error::Refusing to touch unsafe path: $1"
+                exit 1
+                ;;
+            esac
+          }
+
+          require_tmp_path "$STATE_BASE"
+          require_tmp_path "$MINI_DOCKER_ROOT"
+          require_tmp_path "$MINI_DOCKER_RUN"
+          require_tmp_path "$SMOKE_ROOTFS"
+
+          test "$MINI_DOCKER_ROOT" != "/var/lib/mini-docker"
+          test "$MINI_DOCKER_RUN" != "/var/run/mini-docker"
+          test -x rootfs/bin/busybox
+          test -x rootfs/bin/sh
+
+          sudo rm -rf -- "$STATE_BASE"
+          mkdir -p "$STATE_BASE"
+          cp -a rootfs "$SMOKE_ROOTFS"
+          mkdir -p "$MINI_DOCKER_ROOT" "$MINI_DOCKER_RUN"
+          sudo chown -R root:root "$STATE_BASE"
+          sudo chmod 700 "$STATE_BASE" "$MINI_DOCKER_ROOT" "$MINI_DOCKER_RUN"
+
+      - name: Verify privileged Ubuntu runner
+        run: |
+          set -euo pipefail
+          sudo --non-interactive true
+          test "$(sudo --non-interactive id -u)" = "0"
+          command -v unshare
+          command -v mount
+          command -v chroot
+          command -v ip
+          command -v iptables
+          test -e /proc/self/ns/mnt
+          test -e /sys/fs/cgroup/cgroup.controllers
+
+      - name: Run root host doctor
+        run: |
+          set -euo pipefail
+          set +e
+          sudo --non-interactive env \
+            MINI_DOCKER_ROOT="$MINI_DOCKER_ROOT" \
+            MINI_DOCKER_RUN="$MINI_DOCKER_RUN" \
+            PYTHONPATH="$GITHUB_WORKSPACE" \
+            "$PYTHON_BIN" -m mini_docker doctor --rootfs "$SMOKE_ROOTFS" \
+            | tee "$RUNNER_TEMP/root-doctor.txt"
+          doctor_status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$doctor_status" -eq 2 ]; then
+            echo "::warning::Root doctor reported warnings; continuing with smoke validation."
+          elif [ "$doctor_status" -ne 0 ]; then
+            exit "$doctor_status"
+          fi
+
+      - name: Assert root doctor safety report
+        run: |
+          set -euo pipefail
+          set +e
+          sudo --non-interactive env \
+            MINI_DOCKER_ROOT="$MINI_DOCKER_ROOT" \
+            MINI_DOCKER_RUN="$MINI_DOCKER_RUN" \
+            PYTHONPATH="$GITHUB_WORKSPACE" \
+            "$PYTHON_BIN" -m mini_docker doctor \
+              --rootfs "$SMOKE_ROOTFS" \
+              --format json > "$RUNNER_TEMP/root-doctor.json"
+          doctor_status=$?
+          set -e
+
+          if [ "$doctor_status" -ne 0 ] && [ "$doctor_status" -ne 2 ]; then
+            exit "$doctor_status"
+          fi
+
+          python - <<'PY'
+          import json
+          import os
+          import sys
+
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "root-doctor.json")) as f:
+              report = json.load(f)
+
+          if report["mode"] != "root":
+              raise SystemExit(f"expected root doctor mode, got {report['mode']!r}")
+
+          failures = [c for c in report["checks"] if c["status"] == "fail"]
+          if failures:
+              for check in failures:
+                  print(f"{check['name']}: {check['detail']}", file=sys.stderr)
+              raise SystemExit("root doctor reported failing checks")
+
+          state_base = os.environ["STATE_BASE"]
+          for name in ("MINI_DOCKER_ROOT", "MINI_DOCKER_RUN", "SMOKE_ROOTFS"):
+              path = os.environ[name]
+              if not path.startswith(state_base + "/"):
+                  raise SystemExit(f"{name} escaped isolated state path: {path}")
+
+          touched = {item["resource"] for item in report["host_touches"]}
+          forbidden = {"/var/lib/mini-docker", "/var/run/mini-docker"}
+          leaked = sorted(touched & forbidden)
+          if leaked:
+              raise SystemExit(f"doctor reported unsafe host paths: {leaked}")
+          PY
+
+      - name: Run root-mode smoke workload
+        run: |
+          set -euo pipefail
+          sudo --non-interactive unshare --mount --propagation private -- env \
+            MINI_DOCKER_ROOT="$MINI_DOCKER_ROOT" \
+            MINI_DOCKER_RUN="$MINI_DOCKER_RUN" \
+            PYTHONPATH="$GITHUB_WORKSPACE" \
+            "$PYTHON_BIN" -m mini_docker run \
+              --no-overlay \
+              "$SMOKE_ROOTFS" \
+              /bin/echo mini-docker-root-smoke \
+            | tee "$RUNNER_TEMP/root-run.txt"
+
+          grep -q "mini-docker-root-smoke" "$RUNNER_TEMP/root-run.txt"
+          container_id="$(awk '/Created container:/ {print $3}' "$RUNNER_TEMP/root-run.txt" | tail -n 1)"
+          test -n "$container_id"
+          echo "CONTAINER_ID=$container_id" >> "$GITHUB_ENV"
+
+      - name: Verify metadata and logs
+        run: |
+          set -euo pipefail
+          sudo --non-interactive env \
+            MINI_DOCKER_ROOT="$MINI_DOCKER_ROOT" \
+            MINI_DOCKER_RUN="$MINI_DOCKER_RUN" \
+            PYTHONPATH="$GITHUB_WORKSPACE" \
+            "$PYTHON_BIN" -m mini_docker ps -a --format json \
+            > "$RUNNER_TEMP/root-ps.json"
+
+          python - <<'PY'
+          import json
+          import os
+
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "root-ps.json")) as f:
+              containers = json.load(f)
+
+          container_id = os.environ["CONTAINER_ID"]
+          matches = [c for c in containers if c["id"].startswith(container_id)]
+          if len(matches) != 1:
+              raise SystemExit(f"expected one container for {container_id}, got {len(matches)}")
+
+          container = matches[0]
+          if container["status"] != "stopped":
+              raise SystemExit(f"expected stopped container, got {container['status']}")
+          if container.get("exit_code") not in (0, None):
+              raise SystemExit(f"unexpected exit code: {container.get('exit_code')}")
+          if container.get("rootless"):
+              raise SystemExit("root smoke container was marked rootless")
+          PY
+
+          sudo --non-interactive env \
+            MINI_DOCKER_ROOT="$MINI_DOCKER_ROOT" \
+            MINI_DOCKER_RUN="$MINI_DOCKER_RUN" \
+            PYTHONPATH="$GITHUB_WORKSPACE" \
+            "$PYTHON_BIN" -m mini_docker logs "$CONTAINER_ID" \
+            | tee "$RUNNER_TEMP/root-logs.txt"
+          grep -q "mini-docker-root-smoke" "$RUNNER_TEMP/root-logs.txt"
+
+      - name: Remove smoke container
+        run: |
+          set -euo pipefail
+          sudo --non-interactive env \
+            MINI_DOCKER_ROOT="$MINI_DOCKER_ROOT" \
+            MINI_DOCKER_RUN="$MINI_DOCKER_RUN" \
+            PYTHONPATH="$GITHUB_WORKSPACE" \
+            "$PYTHON_BIN" -m mini_docker rm "$CONTAINER_ID"
+
+          sudo --non-interactive env \
+            MINI_DOCKER_ROOT="$MINI_DOCKER_ROOT" \
+            MINI_DOCKER_RUN="$MINI_DOCKER_RUN" \
+            PYTHONPATH="$GITHUB_WORKSPACE" \
+            "$PYTHON_BIN" -m mini_docker ps -a --format json \
+            > "$RUNNER_TEMP/root-ps-after-rm.json"
+
+          python - <<'PY'
+          import json
+          import os
+
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "root-ps-after-rm.json")) as f:
+              containers = json.load(f)
+
+          container_id = os.environ["CONTAINER_ID"]
+          if any(c["id"].startswith(container_id) for c in containers):
+              raise SystemExit(f"container still exists after rm: {container_id}")
+          PY
+
+      - name: Verify runtime cleanup dry-run
+        run: |
+          set -euo pipefail
+          sudo --non-interactive env \
+            MINI_DOCKER_ROOT="$MINI_DOCKER_ROOT" \
+            MINI_DOCKER_RUN="$MINI_DOCKER_RUN" \
+            PYTHONPATH="$GITHUB_WORKSPACE" \
+            "$PYTHON_BIN" -m mini_docker cleanup --runtime --dry-run --force \
+            | tee "$RUNNER_TEMP/root-cleanup-dry-run.txt"
+
+          grep -q "Runtime cleanup (planned):" "$RUNNER_TEMP/root-cleanup-dry-run.txt"
+          grep -q "cleanup-nat" "$RUNNER_TEMP/root-cleanup-dry-run.txt"
+          grep -q "cleanup-bridge" "$RUNNER_TEMP/root-cleanup-dry-run.txt"
+          sudo --non-interactive test ! -e /var/lib/mini-docker
+          sudo --non-interactive test ! -e /var/run/mini-docker
+
+      - name: Remove isolated runtime paths
+        if: always()
+        run: |
+          set -euo pipefail
+
+          require_tmp_path() {
+            case "$1" in
+              /tmp/mini-docker-root-runtime|/tmp/mini-docker-root-runtime/*) ;;
+              *)
+                echo "::error::Refusing to clean unsafe path: $1"
+                exit 1
+                ;;
+            esac
+          }
+
+          require_tmp_path "$STATE_BASE"
+          require_tmp_path "$SMOKE_ROOTFS"
+
+          sudo umount -R "$SMOKE_ROOTFS/dev/pts" 2>/dev/null || true
+          sudo umount -R "$SMOKE_ROOTFS/dev" 2>/dev/null || true
+          sudo umount -R "$SMOKE_ROOTFS/sys" 2>/dev/null || true
+          sudo umount -R "$SMOKE_ROOTFS/proc" 2>/dev/null || true
+          sudo rm -rf -- "$STATE_BASE"

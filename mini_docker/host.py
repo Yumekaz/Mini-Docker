@@ -6,6 +6,7 @@ These helpers are intentionally conservative. They report what root-mode
 runtime operations would touch and only clean Mini-Docker-owned resources.
 """
 
+import ipaddress
 import json
 import os
 import platform
@@ -20,6 +21,7 @@ from mini_docker.metadata import (
     _hydrate_container_config,
 )
 from mini_docker.network import (
+    BRIDGE_IP,
     BRIDGE_NAME,
     BRIDGE_SUBNET,
     delete_bridge,
@@ -35,6 +37,8 @@ WARN = "warn"
 FAIL = "fail"
 SKIP = "skip"
 
+_CONTAINER_ID_RE = re.compile(r"[0-9a-f]{12}")
+
 
 def _check(name: str, status: str, detail: str, fix: str = "") -> Dict[str, str]:
     return {"name": name, "status": status, "detail": detail, "fix": fix}
@@ -44,6 +48,54 @@ def _operation(
     action: str, target: str, status: str, detail: str = ""
 ) -> Dict[str, str]:
     return {"action": action, "target": target, "status": status, "detail": detail}
+
+
+def _is_mini_docker_container_id(container_id: str) -> bool:
+    return isinstance(container_id, str) and bool(
+        _CONTAINER_ID_RE.fullmatch(container_id)
+    )
+
+
+def _expected_veth_names(container_id: str) -> set:
+    short_id = container_id[:8]
+    return {f"veth{short_id}"[:15], f"veth-{short_id}"[:15]}
+
+
+def _is_owned_veth_name(veth_name: str, container_id: str) -> bool:
+    return veth_name in _expected_veth_names(container_id)
+
+
+def _is_bridge_container_ip(ip_address: str) -> bool:
+    try:
+        network = ipaddress.ip_network(BRIDGE_SUBNET, strict=False)
+        address = ipaddress.ip_address(ip_address)
+    except ValueError:
+        return False
+
+    return (
+        address in network
+        and address != network.network_address
+        and address != network.broadcast_address
+        and str(address) != BRIDGE_IP
+    )
+
+
+def _validate_cgroup_cleanup_path(cgroup_path: str) -> Optional[str]:
+    base = os.path.realpath(MINI_DOCKER_CGROUP)
+    target = os.path.realpath(cgroup_path)
+
+    try:
+        inside_base = os.path.commonpath([base, target]) == base
+    except ValueError:
+        inside_base = False
+
+    if not inside_base or target == base:
+        return "cgroup path is outside Mini-Docker cgroup root"
+
+    if not _is_mini_docker_container_id(os.path.basename(target)):
+        return "cgroup path does not end with a Mini-Docker container id"
+
+    return None
 
 
 def _is_linux() -> bool:
@@ -288,11 +340,30 @@ def cleanup_runtime_resources(dry_run: bool = True) -> Dict[str, object]:
     """
     operations: List[Dict[str, str]] = []
     containers = _load_existing_containers()
-    running = [container for container in containers if container.status == "running"]
-    running_ids = {container.id for container in running}
-    known_ids = {container.id for container in containers}
+    invalid_metadata = False
+    safe_containers: List[ContainerConfig] = []
 
     for container in containers:
+        if not _is_mini_docker_container_id(container.id):
+            invalid_metadata = True
+            operations.append(
+                _operation(
+                    "skip-container",
+                    container.id,
+                    FAIL,
+                    "invalid Mini-Docker container id in metadata",
+                )
+            )
+            continue
+        safe_containers.append(container)
+
+    running = [
+        container for container in safe_containers if container.status == "running"
+    ]
+    running_ids = {container.id for container in running}
+    known_ids = {container.id for container in safe_containers}
+
+    for container in safe_containers:
         if container.status == "running":
             operations.append(
                 _operation(
@@ -314,6 +385,8 @@ def cleanup_runtime_resources(dry_run: bool = True) -> Dict[str, object]:
         )
     )
 
+    cleanup_failures = any(op["status"] == FAIL for op in operations)
+
     if running:
         operations.append(
             _operation(
@@ -321,6 +394,15 @@ def cleanup_runtime_resources(dry_run: bool = True) -> Dict[str, object]:
                 BRIDGE_NAME,
                 SKIP,
                 "running containers still exist",
+            )
+        )
+    elif invalid_metadata or cleanup_failures:
+        operations.append(
+            _operation(
+                "skip-network-base",
+                BRIDGE_NAME,
+                SKIP,
+                "unsafe container metadata or cleanup failures present",
             )
         )
     else:
@@ -373,28 +455,53 @@ def _cleanup_container_runtime(
     operations: List[Dict[str, str]] = []
 
     if container.network.ports and container.network.ip:
-        for port_mapping in container.network.ports:
-            try:
-                host_port, container_port = parse_port_mapping(port_mapping)
-            except Exception as e:
-                operations.append(
-                    _operation("cleanup-port", port_mapping, FAIL, str(e))
+        if not _is_bridge_container_ip(container.network.ip):
+            operations.append(
+                _operation(
+                    "cleanup-port",
+                    container.network.ip,
+                    FAIL,
+                    f"container IP is outside Mini-Docker bridge subnet {BRIDGE_SUBNET}",
                 )
-                continue
+            )
+        else:
+            for port_mapping in container.network.ports:
+                try:
+                    host_port, container_port = parse_port_mapping(port_mapping)
+                except Exception as e:
+                    operations.append(
+                        _operation("cleanup-port", port_mapping, FAIL, str(e))
+                    )
+                    continue
 
-            target = f"{host_port}->{container.network.ip}:{container_port}"
-            if dry_run:
-                operations.append(_operation("cleanup-port", target, "planned"))
-                continue
+                target = f"{host_port}->{container.network.ip}:{container_port}"
+                if dry_run:
+                    operations.append(_operation("cleanup-port", target, "planned"))
+                    continue
 
-            try:
-                remove_port_forwarding(host_port, container_port, container.network.ip)
-                operations.append(_operation("cleanup-port", target, OK))
-            except Exception as e:
-                operations.append(_operation("cleanup-port", target, FAIL, str(e)))
+                try:
+                    remove_port_forwarding(
+                        host_port, container_port, container.network.ip
+                    )
+                    operations.append(_operation("cleanup-port", target, OK))
+                except Exception as e:
+                    operations.append(_operation("cleanup-port", target, FAIL, str(e)))
 
     if container.network.veth_host:
-        operations.append(_cleanup_veth(container.network.veth_host, dry_run=dry_run))
+        if _is_owned_veth_name(container.network.veth_host, container.id):
+            operations.append(
+                _cleanup_veth(container.network.veth_host, dry_run=dry_run)
+            )
+        else:
+            expected = ", ".join(sorted(_expected_veth_names(container.id)))
+            operations.append(
+                _operation(
+                    "cleanup-veth",
+                    container.network.veth_host,
+                    FAIL,
+                    f"interface is not owned by container {container.id}; expected {expected}",
+                )
+            )
 
     cgroup_path = os.path.join(MINI_DOCKER_CGROUP, container.id)
     operations.append(_cleanup_empty_cgroup(cgroup_path, dry_run=dry_run))
@@ -457,6 +564,10 @@ def _cleanup_orphan_cgroups(
 
 
 def _cleanup_empty_cgroup(cgroup_path: str, dry_run: bool) -> Dict[str, str]:
+    unsafe_reason = _validate_cgroup_cleanup_path(cgroup_path)
+    if unsafe_reason:
+        return _operation("cleanup-cgroup", cgroup_path, FAIL, unsafe_reason)
+
     if not os.path.exists(cgroup_path):
         return _operation("cleanup-cgroup", cgroup_path, SKIP, "not present")
 

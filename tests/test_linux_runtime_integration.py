@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 
@@ -30,6 +31,12 @@ def _rootfs_path():
     return rootfs
 
 
+def _copy_rootfs(tmp_path):
+    rootfs = tmp_path / "rootfs"
+    shutil.copytree(_rootfs_path(), rootfs, symlinks=True)
+    return str(rootfs)
+
+
 def _require_rootfs_binary(rootfs, binary):
     if not os.path.exists(os.path.join(rootfs, "bin", binary)):
         pytest.skip(f"rootfs/bin/{binary} is required for this integration test")
@@ -45,6 +52,7 @@ def _runtime_env(tmp_path):
 def test_pid_namespace_workload_runs_as_pid_one(tmp_path):
     _require_root()
     _require_cgroups_v2()
+    rootfs = _copy_rootfs(tmp_path)
 
     result = subprocess.run(
         [
@@ -53,7 +61,7 @@ def test_pid_namespace_workload_runs_as_pid_one(tmp_path):
             "mini_docker",
             "run",
             "--no-overlay",
-            _rootfs_path(),
+            rootfs,
             "/bin/sh",
             "-c",
             "echo $$",
@@ -72,7 +80,7 @@ def test_pid_namespace_workload_runs_as_pid_one(tmp_path):
 def test_memory_limit_cgroup_is_enforced(tmp_path):
     _require_root()
     _require_cgroups_v2()
-    rootfs = _rootfs_path()
+    rootfs = _copy_rootfs(tmp_path)
     _require_rootfs_binary(rootfs, "python3")
 
     result = subprocess.run(
