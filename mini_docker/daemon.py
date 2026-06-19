@@ -25,15 +25,16 @@ from mini_docker.container import (
 from mini_docker.metadata import ContainerLookupAmbiguityError, asdict
 from mini_docker.utils import DEFAULT_SOCKET_PATH, ensure_directories
 
-if hasattr(socketserver, "UnixStreamServer"):
+if hasattr(socketserver, "ThreadingUnixStreamServer"):
 
-    class UnixSocketHTTPServer(socketserver.UnixStreamServer):
+    class UnixSocketHTTPServer(socketserver.ThreadingUnixStreamServer):
         """A HTTP server that listens on a Unix domain socket."""
 
         def get_request(self):
             request, client_address = super().get_request()
             # BaseHTTPRequestHandler expects client_address to be tuple-like.
             return request, ["local", 0]
+
 
 else:
 
@@ -115,6 +116,42 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                     self.send_error_response(404, "Container not found")
             except ContainerLookupAmbiguityError as e:
                 self.send_error_response(400, str(e))
+            return
+
+        elif path.startswith("/containers/") and path.endswith("/logs"):
+            # Stream logs
+            container_id = path.split("/")[2]
+            
+            # Parse query parameters
+            query = urllib.parse.parse_qs(parsed_url.query)
+            follow = query.get("follow", ["false"])[0].lower() in ["true", "1"]
+            tail_str = query.get("tail", [None])[0]
+            tail = int(tail_str) if tail_str and tail_str.isdigit() else None
+            timestamps = query.get("timestamps", ["true"])[0].lower() in ["true", "1"]
+
+            try:
+                # Check container exists
+                config = self.container_manager.inspect(container_id)
+                if not config:
+                    self.send_error_response(404, "Container not found")
+                    return
+
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+
+                from mini_docker.logger import read_logs
+                for line in read_logs(container_id, follow=follow, tail=tail, timestamps=timestamps):
+                    chunk = (line + "\n").encode("utf-8")
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except ContainerLookupAmbiguityError as e:
+                self.send_error_response(400, str(e))
+            except Exception as e:
+                try:
+                    self.send_error_response(500, str(e))
+                except Exception:
+                    pass
             return
 
         elif path == "/info":
