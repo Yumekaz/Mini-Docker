@@ -200,14 +200,26 @@ def container_exists(container_id: str) -> bool:
 
 def save_container_config(config: ContainerConfig) -> str:
     """Save container configuration to disk."""
+    import fcntl
     ensure_directories()
 
     container_path = get_container_path(config.id)
     os.makedirs(container_path, exist_ok=True)
 
     config_path = _container_config_path(config.id)
-    with open(config_path, "w") as f:
-        json.dump(asdict(config), f, indent=2)
+    fd = os.open(config_path, os.O_RDWR | os.O_CREAT)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        payload = json.dumps(asdict(config), indent=2).encode("utf-8")
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.ftruncate(fd, 0)
+        os.write(fd, payload)
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
 
     return config_path
 

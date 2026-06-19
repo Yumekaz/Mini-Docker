@@ -239,6 +239,7 @@ def setup_port_forwarding(
     Set up port forwarding from host to container using iptables.
     """
     try:
+        # PREROUTING rule for external traffic
         subprocess.run(
             [
                 "iptables",
@@ -246,6 +247,26 @@ def setup_port_forwarding(
                 "nat",
                 "-A",
                 "PREROUTING",
+                "-p",
+                "tcp",
+                "--dport",
+                str(host_port),
+                "-j",
+                "DNAT",
+                "--to-destination",
+                f"{container_ip}:{container_port}",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        # OUTPUT rule for loopback/localhost traffic
+        subprocess.run(
+            [
+                "iptables",
+                "-t",
+                "nat",
+                "-A",
+                "OUTPUT",
                 "-p",
                 "tcp",
                 "--dport",
@@ -272,6 +293,7 @@ def remove_port_forwarding(
     Remove port forwarding rule for a container.
     """
     try:
+        # Remove PREROUTING rule
         subprocess.run(
             [
                 "iptables",
@@ -279,6 +301,30 @@ def remove_port_forwarding(
                 "nat",
                 "-D",
                 "PREROUTING",
+                "-p",
+                "tcp",
+                "--dport",
+                str(host_port),
+                "-j",
+                "DNAT",
+                "--to-destination",
+                f"{container_ip}:{container_port}",
+            ],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError:
+        pass
+
+    try:
+        # Remove OUTPUT rule
+        subprocess.run(
+            [
+                "iptables",
+                "-t",
+                "nat",
+                "-D",
+                "OUTPUT",
                 "-p",
                 "tcp",
                 "--dport",
@@ -304,33 +350,58 @@ def setup_nat(subnet: str = BRIDGE_SUBNET) -> None:
     Args:
         subnet: Source subnet to NAT
     """
-    # Enable IP forwarding
+    # Enable IP forwarding and route_localnet
     try:
         with open("/proc/sys/net/ipv4/ip_forward", "w") as f:
             f.write("1")
     except (IOError, PermissionError):
         pass
+    try:
+        with open("/proc/sys/net/ipv4/conf/all/route_localnet", "w") as f:
+            f.write("1")
+    except (IOError, PermissionError):
+        pass
+    try:
+        with open(f"/proc/sys/net/ipv4/conf/{BRIDGE_NAME}/route_localnet", "w") as f:
+            f.write("1")
+    except (IOError, PermissionError):
+        pass
 
-    # Add NAT rule (MASQUERADE) if it is missing.
+    # 1. Outbound NAT rule (MASQUERADE from subnet)
     check_rule = run_iptables_command(
         ["-t", "nat", "-C", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE"],
         check=False,
     )
-    if check_rule.returncode == 0:
-        return
+    if check_rule.returncode != 0:
+        try:
+            run_iptables_command(
+                ["-t", "nat", "-A", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE"]
+            )
+        except subprocess.CalledProcessError as e:
+            raise NetworkError(f"Failed to set up NAT for {subnet}: {e}") from e
 
-    try:
-        run_iptables_command(
-            ["-t", "nat", "-A", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE"]
-        )
-    except subprocess.CalledProcessError as e:
-        raise NetworkError(f"Failed to set up NAT for {subnet}: {e}") from e
+    # 2. NAT loopback rule (MASQUERADE outbound to bridge)
+    check_loopback = run_iptables_command(
+        ["-t", "nat", "-C", "POSTROUTING", "-o", BRIDGE_NAME, "-j", "MASQUERADE"],
+        check=False,
+    )
+    if check_loopback.returncode != 0:
+        try:
+            run_iptables_command(
+                ["-t", "nat", "-A", "POSTROUTING", "-o", BRIDGE_NAME, "-j", "MASQUERADE"]
+            )
+        except subprocess.CalledProcessError as e:
+            raise NetworkError(f"Failed to set up NAT loopback on {BRIDGE_NAME}: {e}") from e
 
 
 def remove_nat(subnet: str = BRIDGE_SUBNET) -> None:
-    """Remove the Mini-Docker NAT MASQUERADE rule if it exists."""
+    """Remove the Mini-Docker NAT MASQUERADE rules if they exist."""
     run_iptables_command(
         ["-t", "nat", "-D", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE"],
+        check=False,
+    )
+    run_iptables_command(
+        ["-t", "nat", "-D", "POSTROUTING", "-o", BRIDGE_NAME, "-j", "MASQUERADE"],
         check=False,
     )
 

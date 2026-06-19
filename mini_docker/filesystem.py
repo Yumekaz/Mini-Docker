@@ -330,9 +330,9 @@ def setup_pivot_root(merged_path: str) -> None:
         except FilesystemError:
             pass
 
-    # Make new_root a mount point (required for pivot_root)
+    # Make new_root a mount point (required for pivot_root, recursively bind mount to carry sub-mounts)
     try:
-        mount(merged_path, merged_path, None, MS_BIND)
+        mount(merged_path, merged_path, None, MS_BIND | MS_REC)
     except FilesystemError:
         pass
 

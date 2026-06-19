@@ -31,6 +31,10 @@ from mini_docker.filesystem import (
     setup_minimal_dev,
     setup_overlay_filesystem,
     setup_pivot_root,
+    mount,
+    MS_BIND,
+    MS_REC,
+    MS_RDONLY,
 )
 from mini_docker.logger import ContainerLogger
 from mini_docker.metadata import (
@@ -94,10 +98,18 @@ def _open_container_metadata_fd(container_id: str) -> int:
 
 def _write_config_to_fd(fd: int, config: ContainerConfig) -> None:
     """Persist container metadata through a pre-opened host-side file descriptor."""
+    import fcntl
     payload = json.dumps(asdict(config), indent=2).encode("utf-8")
-    os.lseek(fd, 0, os.SEEK_SET)
-    os.ftruncate(fd, 0)
-    os.write(fd, payload)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.ftruncate(fd, 0)
+        os.write(fd, payload)
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
 
 
 def _try_reap_process(pid: int) -> Optional[int]:
@@ -594,6 +606,19 @@ class Container:
             # Set up filesystem
             rootfs_to_pivot = config.rootfs
 
+            # Configure network inside container (done before pivot_root/chroot so host 'ip' executable is accessible)
+            if (
+                config.network_enabled
+                and "net" in config.namespaces
+                and config.network.ip
+            ):
+                try:
+                    configure_container_network(config.network.ip)
+                except Exception as e:
+                    raise ContainerInternalError(
+                        f"Container network configuration failed: {e}"
+                    ) from e
+
             if config.use_overlay:
                 try:
                     from mini_docker.filesystem import FilesystemError
@@ -619,6 +644,25 @@ class Container:
             except Exception:
                 pass
 
+            # Mount custom volumes
+            for vol in config.volumes:
+                host_path = vol.get("host")
+                container_path = vol.get("container")
+                mode = vol.get("mode", "rw")
+                if not host_path or not container_path:
+                    continue
+                rel_container_path = container_path.lstrip("/")
+                target_path = os.path.join(rootfs_to_pivot, rel_container_path)
+                os.makedirs(target_path, exist_ok=True)
+                flags = MS_BIND | MS_REC
+                if mode == "ro":
+                    flags |= MS_RDONLY
+                try:
+                    logger.write(f"Mounting volume: {host_path} -> {target_path} ({mode})\n")
+                    mount(host_path, target_path, None, flags)
+                except Exception as e:
+                    logger.write(f"Warning: Failed to mount volume {host_path} -> {container_path}: {e}\n")
+
             # Use pivot_root for better isolation, fallback to chroot
             try:
                 setup_pivot_root(rootfs_to_pivot)
@@ -626,18 +670,7 @@ class Container:
                 # Fallback to chroot
                 setup_chroot_filesystem(rootfs_to_pivot)
 
-            # Configure network inside container
-            if (
-                config.network_enabled
-                and "net" in config.namespaces
-                and config.network.ip
-            ):
-                try:
-                    configure_container_network(config.network.ip)
-                except Exception as e:
-                    raise ContainerInternalError(
-                        f"Container network configuration failed: {e}"
-                    ) from e
+
 
             # Change to working directory
             try:

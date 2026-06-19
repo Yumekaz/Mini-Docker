@@ -151,11 +151,27 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                         if host_port:
                             ports.append(f"{host_port}:{container_port}")
 
+                # Handle volume binds simply (Docker standard format: ["/host:/container:ro"])
+                binds = host_config.get("Binds", [])
+                volumes = []
+                for b in binds:
+                    parts = b.split(":")
+                    if len(parts) >= 2:
+                        host_path = parts[0]
+                        container_path = parts[1]
+                        mode = parts[2] if len(parts) == 3 else "rw"
+                        volumes.append({
+                            "host": host_path,
+                            "container": container_path,
+                            "mode": mode
+                        })
+
                 config = self.container_manager.create(
                     rootfs=rootfs,
                     command=command,
                     name=name,
                     ports=ports if ports else None,
+                    volumes=volumes if volumes else None,
                     detach=True,  # Daemon creations are inherently detached from the socket
                 )
                 self.send_json_response(201, {"Id": config.id})

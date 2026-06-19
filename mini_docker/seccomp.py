@@ -164,6 +164,7 @@ SYSCALLS = {
     "alarm": 37,
     "setitimer": 38,
     "getpid": 39,
+    "sendfile": 40,
     "socket": 41,
     "connect": 42,
     "accept": 43,
@@ -412,6 +413,7 @@ ALLOWED_SYSCALLS_WHITELIST = {
     # === FILE I/O ===
     "read",
     "write",
+    "sendfile",
     "open",
     "openat",
     "close",
