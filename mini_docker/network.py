@@ -461,6 +461,9 @@ def setup_container_networking(
     # Set up NAT
     setup_nat()
 
+    # Flush ARP cache on the bridge to prevent stale mappings
+    run_ip_command(["neigh", "flush", "dev", BRIDGE_NAME], check=False)
+
     return veth_host, veth_container, ip_address
 
 
@@ -501,6 +504,7 @@ def cleanup_container_networking(container_id: str) -> None:
     delete_veth(veth_host)
     # Try alternate naming patterns
     delete_veth(f"veth-{short_id}"[:15])
+    run_ip_command(["neigh", "flush", "dev", BRIDGE_NAME], check=False)
 
 
 class Network:

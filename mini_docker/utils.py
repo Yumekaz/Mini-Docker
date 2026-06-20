@@ -464,6 +464,18 @@ def is_process_alive(pid: Optional[int]) -> bool:
     if pid is None or pid <= 0:
         return False
 
+    # Check if the process is a zombie (Z)
+    try:
+        with open(f"/proc/{pid}/status", "r") as f:
+            for line in f:
+                if line.startswith("State:"):
+                    state = line.split()[1]
+                    if state.upper() == "Z":
+                        return False
+                    break
+    except Exception:
+        pass
+
     try:
         os.kill(pid, 0)
         return True

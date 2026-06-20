@@ -837,6 +837,7 @@ class Container:
                 pass
 
         config.pid = workload_pid
+        config.supervisor_pid = os.getpid()
         config.status = "running"
         if config.started_at is None:
             config.started_at = time.time()

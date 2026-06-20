@@ -100,6 +100,7 @@ class ContainerConfig:
 
     status: str = "created"
     pid: Optional[int] = None
+    supervisor_pid: Optional[int] = None
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
@@ -129,9 +130,15 @@ def _read_container_data(container_id: str) -> Optional[Dict]:
     if not os.path.exists(config_path):
         return None
 
+    import fcntl
     try:
-        with open(config_path, "r") as f:
-            return json.load(f)
+        fd = os.open(config_path, os.O_RDONLY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH)
+            data = os.read(fd, 65536)
+            return json.loads(data.decode("utf-8"))
+        finally:
+            os.close(fd)
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -149,6 +156,10 @@ def _hydrate_container_config(data: Dict) -> Optional[ContainerConfig]:
 
 def _refresh_container_state(config: ContainerConfig) -> ContainerConfig:
     if config.status != "running":
+        return config
+
+    super_pid = config.supervisor_pid if config.supervisor_pid is not None else config.pid
+    if super_pid and is_process_alive(super_pid):
         return config
 
     if not is_process_alive(config.pid):
@@ -252,11 +263,13 @@ def update_container_status(
     if status == "running":
         if pid is not None:
             config.pid = pid
+            config.supervisor_pid = pid
         if config.started_at is None:
             config.started_at = time.time()
 
     if status == "stopped":
         config.pid = None
+        config.supervisor_pid = None
         config.finished_at = time.time()
         if exit_code is not None:
             config.exit_code = exit_code
