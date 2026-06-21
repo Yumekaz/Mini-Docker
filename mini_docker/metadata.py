@@ -131,6 +131,7 @@ def _read_container_data(container_id: str) -> Optional[Dict]:
         return None
 
     import fcntl
+
     try:
         fd = os.open(config_path, os.O_RDONLY)
         try:
@@ -158,7 +159,9 @@ def _refresh_container_state(config: ContainerConfig) -> ContainerConfig:
     if config.status != "running":
         return config
 
-    super_pid = config.supervisor_pid if config.supervisor_pid is not None else config.pid
+    super_pid = (
+        config.supervisor_pid if config.supervisor_pid is not None else config.pid
+    )
     if super_pid and is_process_alive(super_pid):
         return config
 
@@ -212,6 +215,7 @@ def container_exists(container_id: str) -> bool:
 def save_container_config(config: ContainerConfig) -> str:
     """Save container configuration to disk."""
     import fcntl
+
     ensure_directories()
 
     container_path = get_container_path(config.id)

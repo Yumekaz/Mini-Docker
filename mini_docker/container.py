@@ -26,15 +26,15 @@ from typing import Dict, List, Optional
 from mini_docker.capabilities import Capabilities
 from mini_docker.cgroups import Cgroup, delete_cgroup
 from mini_docker.filesystem import (
+    MS_BIND,
+    MS_RDONLY,
+    MS_REC,
     cleanup_overlay,
+    mount,
     setup_chroot_filesystem,
     setup_minimal_dev,
     setup_overlay_filesystem,
     setup_pivot_root,
-    mount,
-    MS_BIND,
-    MS_REC,
-    MS_RDONLY,
 )
 from mini_docker.logger import ContainerLogger
 from mini_docker.metadata import (
@@ -99,6 +99,7 @@ def _open_container_metadata_fd(container_id: str) -> int:
 def _write_config_to_fd(fd: int, config: ContainerConfig) -> None:
     """Persist container metadata through a pre-opened host-side file descriptor."""
     import fcntl
+
     payload = json.dumps(asdict(config), indent=2).encode("utf-8")
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -658,10 +659,14 @@ class Container:
                 if mode == "ro":
                     flags |= MS_RDONLY
                 try:
-                    logger.write(f"Mounting volume: {host_path} -> {target_path} ({mode})\n")
+                    logger.write(
+                        f"Mounting volume: {host_path} -> {target_path} ({mode})\n"
+                    )
                     mount(host_path, target_path, None, flags)
                 except Exception as e:
-                    logger.write(f"Warning: Failed to mount volume {host_path} -> {container_path}: {e}\n")
+                    logger.write(
+                        f"Warning: Failed to mount volume {host_path} -> {container_path}: {e}\n"
+                    )
 
             # Use pivot_root for better isolation, fallback to chroot
             try:
@@ -669,8 +674,6 @@ class Container:
             except Exception as e:
                 # Fallback to chroot
                 setup_chroot_filesystem(rootfs_to_pivot)
-
-
 
             # Change to working directory
             try:

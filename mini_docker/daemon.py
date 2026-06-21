@@ -35,7 +35,6 @@ if hasattr(socketserver, "ThreadingUnixStreamServer"):
             # BaseHTTPRequestHandler expects client_address to be tuple-like.
             return request, ["local", 0]
 
-
 else:
 
     class UnixSocketHTTPServer:
@@ -121,7 +120,7 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
         elif path.startswith("/containers/") and path.endswith("/logs"):
             # Stream logs
             container_id = path.split("/")[2]
-            
+
             # Parse query parameters
             query = urllib.parse.parse_qs(parsed_url.query)
             follow = query.get("follow", ["false"])[0].lower() in ["true", "1"]
@@ -141,7 +140,10 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                 self.end_headers()
 
                 from mini_docker.logger import read_logs
-                for line in read_logs(container_id, follow=follow, tail=tail, timestamps=timestamps):
+
+                for line in read_logs(
+                    container_id, follow=follow, tail=tail, timestamps=timestamps
+                ):
                     chunk = (line + "\n").encode("utf-8")
                     self.wfile.write(chunk)
                     self.wfile.flush()
@@ -196,11 +198,13 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                         host_path = parts[0]
                         container_path = parts[1]
                         mode = parts[2] if len(parts) == 3 else "rw"
-                        volumes.append({
-                            "host": host_path,
-                            "container": container_path,
-                            "mode": mode
-                        })
+                        volumes.append(
+                            {
+                                "host": host_path,
+                                "container": container_path,
+                                "mode": mode,
+                            }
+                        )
 
                 # Parse Env from standard Docker format: ["KEY=VALUE"] into a dict
                 env_list = body.get("Env", []) or []
@@ -211,7 +215,7 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                         env_dict[k] = v
 
                 network_mode = host_config.get("NetworkMode", "bridge")
-                network_param = (network_mode != "none")
+                network_param = network_mode != "none"
 
                 config = self.container_manager.create(
                     rootfs=rootfs,

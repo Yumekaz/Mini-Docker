@@ -37,6 +37,32 @@ def test_setup_nat_adds_missing_masquerade_rule(monkeypatch):
             ["-t", "nat", "-A", "POSTROUTING", "-s", "10.0.0.0/24", "-j", "MASQUERADE"],
             True,
         ),
+        (
+            [
+                "-t",
+                "nat",
+                "-C",
+                "POSTROUTING",
+                "-o",
+                "mini-docker0",
+                "-j",
+                "MASQUERADE",
+            ],
+            False,
+        ),
+        (
+            [
+                "-t",
+                "nat",
+                "-A",
+                "POSTROUTING",
+                "-o",
+                "mini-docker0",
+                "-j",
+                "MASQUERADE",
+            ],
+            True,
+        ),
     ]
 
 
@@ -55,7 +81,20 @@ def test_setup_nat_does_not_add_existing_masquerade_rule(monkeypatch):
         (
             ["-t", "nat", "-C", "POSTROUTING", "-s", "10.0.0.0/24", "-j", "MASQUERADE"],
             False,
-        )
+        ),
+        (
+            [
+                "-t",
+                "nat",
+                "-C",
+                "POSTROUTING",
+                "-o",
+                "mini-docker0",
+                "-j",
+                "MASQUERADE",
+            ],
+            False,
+        ),
     ]
 
 
@@ -84,5 +123,18 @@ def test_remove_nat_uses_non_failing_delete(monkeypatch):
         (
             ["-t", "nat", "-D", "POSTROUTING", "-s", "10.0.0.0/24", "-j", "MASQUERADE"],
             False,
-        )
+        ),
+        (
+            [
+                "-t",
+                "nat",
+                "-D",
+                "POSTROUTING",
+                "-o",
+                "mini-docker0",
+                "-j",
+                "MASQUERADE",
+            ],
+            False,
+        ),
     ]

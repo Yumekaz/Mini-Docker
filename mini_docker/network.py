@@ -388,10 +388,21 @@ def setup_nat(subnet: str = BRIDGE_SUBNET) -> None:
     if check_loopback.returncode != 0:
         try:
             run_iptables_command(
-                ["-t", "nat", "-A", "POSTROUTING", "-o", BRIDGE_NAME, "-j", "MASQUERADE"]
+                [
+                    "-t",
+                    "nat",
+                    "-A",
+                    "POSTROUTING",
+                    "-o",
+                    BRIDGE_NAME,
+                    "-j",
+                    "MASQUERADE",
+                ]
             )
         except subprocess.CalledProcessError as e:
-            raise NetworkError(f"Failed to set up NAT loopback on {BRIDGE_NAME}: {e}") from e
+            raise NetworkError(
+                f"Failed to set up NAT loopback on {BRIDGE_NAME}: {e}"
+            ) from e
 
 
 def remove_nat(subnet: str = BRIDGE_SUBNET) -> None:
