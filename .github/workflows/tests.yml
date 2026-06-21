@@ -35,7 +35,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if ! pip install -e ".[dev]" > pip_error.log 2>&1; then
-            echo "::error file=.github,line=1::$(tail -c 2000 pip_error.log)"
+            python -c "import sys; print('::error file=.github,line=1::' + sys.stdin.read()[-3000:].replace('\n', '%0A'))" < pip_error.log
             cat pip_error.log
             exit 1
           fi
