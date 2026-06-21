@@ -161,8 +161,6 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
             )
             return
 
-        self.send_error_response(404, "Not Found")
-
     def do_POST(self):
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path
@@ -176,20 +174,21 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                 name = body.get("name")
 
                 # Parse host config
-                host_config = body.get("HostConfig", {})
+                host_config = body.get("HostConfig", {}) or {}
 
                 # Handle port bindings simply
-                port_bindings = host_config.get("PortBindings", {})
+                port_bindings = host_config.get("PortBindings", {}) or {}
                 ports = []
                 for container_port_proto, host_bindings in port_bindings.items():
                     container_port = container_port_proto.split("/")[0]
-                    for binding in host_bindings:
-                        host_port = binding.get("HostPort")
-                        if host_port:
-                            ports.append(f"{host_port}:{container_port}")
+                    if host_bindings:
+                        for binding in host_bindings:
+                            host_port = binding.get("HostPort")
+                            if host_port:
+                                ports.append(f"{host_port}:{container_port}")
 
                 # Handle volume binds simply (Docker standard format: ["/host:/container:ro"])
-                binds = host_config.get("Binds", [])
+                binds = host_config.get("Binds", []) or []
                 volumes = []
                 for b in binds:
                     parts = b.split(":")
@@ -203,13 +202,26 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                             "mode": mode
                         })
 
+                # Parse Env from standard Docker format: ["KEY=VALUE"] into a dict
+                env_list = body.get("Env", []) or []
+                env_dict = {}
+                for item in env_list:
+                    if "=" in item:
+                        k, v = item.split("=", 1)
+                        env_dict[k] = v
+
+                network_mode = host_config.get("NetworkMode", "bridge")
+                network_param = (network_mode != "none")
+
                 config = self.container_manager.create(
                     rootfs=rootfs,
                     command=command,
                     name=name,
                     ports=ports if ports else None,
                     volumes=volumes if volumes else None,
-                    detach=True,  # Daemon creations are inherently detached from the socket
+                    detach=True,
+                    network=network_param,
+                    env=env_dict if env_dict else None,
                 )
                 self.send_json_response(201, {"Id": config.id})
             except ContainerError as e:
