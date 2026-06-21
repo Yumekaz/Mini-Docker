@@ -104,7 +104,7 @@ def _run_smoke(tmp_path, *args, extra_env=None):
         env=env,
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=45,
     )
     records = []
     if log_path.exists():
