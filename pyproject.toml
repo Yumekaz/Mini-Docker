@@ -12,7 +12,7 @@ version = "1.0.0"
 description = "A lightweight Linux container runtime built from scratch in Python"
 readme = "README.md"
 requires-python = ">=3.8"
-license = "MIT"
+license = {text = "MIT"}
 authors = [
   { name = "Mihir Swarnkar", email = "mihir.swarnkar722@gmail.com" },
 ]

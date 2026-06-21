@@ -23,22 +23,18 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-#      - name: Cache pip dependencies
-#        uses: actions/cache@v4
-#        with:
-#          path: ~/.cache/pip
-#          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
-#          restore-keys: |
-#            ${{ runner.os }}-pip-
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if ! pip install -e ".[dev]" > pip_error.log 2>&1; then
-            python -c "import sys; print('::error file=.github,line=1::' + sys.stdin.read()[-3000:].replace('\n', '%0A'))" < pip_error.log
-            cat pip_error.log
-            exit 1
-          fi
+          pip install -e ".[dev]"
 
       - name: Run tests
         run: |
