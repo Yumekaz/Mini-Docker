@@ -23,7 +23,7 @@ from mini_docker.container import (
     ContainerNotFoundError,
 )
 from mini_docker.metadata import ContainerLookupAmbiguityError, asdict
-from mini_docker.utils import DEFAULT_SOCKET_PATH, ensure_directories
+from mini_docker.utils import DEFAULT_SOCKET_PATH, ensure_directories, check_root
 
 if hasattr(socketserver, "ThreadingUnixStreamServer"):
 
@@ -226,6 +226,7 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                     detach=True,
                     network=network_param,
                     env=env_dict if env_dict else None,
+                    rootless=body.get("Rootless", not check_root()),
                 )
                 self.send_json_response(201, {"Id": config.id})
             except ContainerError as e:

@@ -27,6 +27,7 @@ from mini_docker.capabilities import Capabilities
 from mini_docker.cgroups import Cgroup, delete_cgroup
 from mini_docker.filesystem import (
     MS_BIND,
+    MS_PRIVATE,
     MS_RDONLY,
     MS_REC,
     cleanup_overlay,
@@ -619,6 +620,13 @@ class Container:
                     raise ContainerInternalError(
                         f"Container network configuration failed: {e}"
                     ) from e
+
+            # Make the mounts private inside container's mount namespace.
+            # systemd-based hosts default to shared mounts, which prevents chroot/pivot_root inside rootless user namespaces.
+            try:
+                mount("", "/", None, MS_REC | MS_PRIVATE, None)
+            except Exception as e:
+                logger.write(f"Warning: Failed to make mounts private: {e}\n")
 
             if config.use_overlay:
                 try:

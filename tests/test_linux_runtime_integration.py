@@ -62,6 +62,7 @@ def test_pid_namespace_workload_runs_as_pid_one(tmp_path):
             "run",
             "--no-overlay",
             rootfs,
+            "--",
             "/bin/sh",
             "-c",
             "echo $$",
