@@ -83,3 +83,48 @@ def test_run_daemon_secures_socket_permissions(monkeypatch, tmp_path):
     run_daemon(socket_path, socket_mode=0o600)
 
     chmod.assert_called_once_with(socket_path, 0o600)
+
+
+def test_run_daemon_warns_for_world_accessible_explicit_mode(monkeypatch, tmp_path):
+    socket_path = str(tmp_path / "mini-docker.sock")
+    chmod = mock.Mock()
+    monkeypatch.setattr("mini_docker.daemon.os.chmod", chmod)
+    monkeypatch.setattr("mini_docker.daemon.ensure_directories", mock.Mock())
+
+    class DummyServer:
+        def __init__(self, path, handler):
+            self.path = path
+            self.handler = handler
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def serve_forever(self):
+            return None
+
+    monkeypatch.setattr("mini_docker.daemon.UnixSocketHTTPServer", DummyServer)
+
+    with mock.patch("mini_docker.daemon.warnings.warn") as warn:
+        run_daemon(socket_path, socket_mode=0o666)
+        run_daemon(socket_path, socket_mode=0o666, insecure_socket_mode=True)
+
+    warn.assert_called_once()
+    assert "unsafe mode 0o666" in warn.call_args.args[0]
+    assert chmod.call_count == 2
+    chmod.assert_called_with(socket_path, 0o666)
+
+
+def test_daemon_parser_requires_explicit_acknowledgement_flag_for_insecure_mode():
+    from mini_docker.cli import create_parser
+
+    default_args = create_parser().parse_args(["daemon"])
+    insecure_args = create_parser().parse_args(
+        ["daemon", "--socket-mode", "666", "--insecure-socket-mode"]
+    )
+
+    assert default_args.socket_mode == "660"
+    assert insecure_args.socket_mode == "666"
+    assert insecure_args.insecure_socket_mode is True

@@ -11,6 +11,7 @@ import json
 import os
 import socketserver
 import urllib.parse
+import warnings
 from http.server import BaseHTTPRequestHandler
 from typing import Any, Dict
 
@@ -300,10 +301,40 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
         self.send_error_response(404, "Not Found")
 
 
-def run_daemon(socket_path: str = DEFAULT_SOCKET_PATH, socket_mode: int = 0o660):
+DEFAULT_SOCKET_MODE = 0o660
+
+
+def _warn_for_insecure_socket_mode(
+    socket_path: str, socket_mode: int, acknowledged: bool
+):
+    """Warn when a daemon socket grants access to the world.
+
+    Explicit socket modes remain supported for existing controller setups, but
+    world-accessible modes are never silent.  Operators can acknowledge an
+    intentional exception with ``--insecure-socket-mode``.
+    """
+    if socket_mode & 0o007 and not acknowledged:
+        warnings.warn(
+            "Mini-Docker daemon socket "
+            f"{socket_path!r} is configured with unsafe mode {oct(socket_mode)}; "
+            "this grants access to users outside the socket owner/group. "
+            "Use --insecure-socket-mode only when this is intentional.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
+
+def run_daemon(
+    socket_path: str = DEFAULT_SOCKET_PATH,
+    socket_mode: int = DEFAULT_SOCKET_MODE,
+    insecure_socket_mode: bool = False,
+):
     """
     Start the Mini-Docker API daemon.
     """
+    _warn_for_insecure_socket_mode(
+        socket_path, socket_mode, acknowledged=insecure_socket_mode
+    )
     ensure_directories()
 
     # Ensure directory for socket exists

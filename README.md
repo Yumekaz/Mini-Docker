@@ -146,6 +146,11 @@ Start the daemon for a PaaS control plane:
 sudo python3 -m mini_docker daemon --socket /var/run/mini-docker.sock
 ```
 
+The daemon defaults to socket mode `0660`, limiting access to the owner and
+socket group. Explicit `--socket-mode` values are preserved for integrations,
+but modes granting access to other users emit a warning. If that exposure is
+intentional, acknowledge it explicitly with `--insecure-socket-mode`.
+
 Check host compatibility before running root-mode containers:
 
 ```bash

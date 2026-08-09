@@ -377,7 +377,15 @@ def create_parser() -> argparse.ArgumentParser:
     daemon_parser.add_argument(
         "--socket-mode",
         default="660",
-        help="Octal permissions for the Unix socket (default: 660)",
+        help=(
+            "Octal permissions for the Unix socket (default: 660); "
+            "unsafe world-accessible modes warn"
+        ),
+    )
+    daemon_parser.add_argument(
+        "--insecure-socket-mode",
+        action="store_true",
+        help="Acknowledge that an unsafe socket mode is intentional",
     )
 
     # =========================================================================
@@ -1196,7 +1204,11 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         socket_mode = int(args.socket_mode, 8)
         if socket_mode < 0 or socket_mode > 0o777:
             raise ValueError
-        run_daemon(socket_path=socket_path, socket_mode=socket_mode)
+        run_daemon(
+            socket_path=socket_path,
+            socket_mode=socket_mode,
+            insecure_socket_mode=args.insecure_socket_mode,
+        )
         return 0
     except ValueError:
         print(f"Error: Invalid socket mode: {args.socket_mode}", file=sys.stderr)
