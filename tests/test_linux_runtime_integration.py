@@ -94,6 +94,7 @@ def test_memory_limit_cgroup_is_enforced(tmp_path):
             "--memory",
             "32M",
             rootfs,
+            "--",
             "/bin/sh",
             "-c",
             "python3 - <<'PY'\nblocks=[]\nwhile True:\n    blocks.append(bytearray(1024 * 1024))\nPY",
@@ -106,3 +107,117 @@ def test_memory_limit_cgroup_is_enforced(tmp_path):
     )
 
     assert result.returncode != 0
+
+
+def test_rw_volume_roundtrip_between_host_and_container(tmp_path):
+    _require_root()
+    _require_cgroups_v2()
+    rootfs = _copy_rootfs(tmp_path)
+
+    host_dir = tmp_path / "hostvol"
+    host_dir.mkdir()
+    (host_dir / "seed.txt").write_text("from-host")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "mini_docker",
+            "run",
+            "--no-overlay",
+            "--volume",
+            f"{host_dir}:/data:rw",
+            rootfs,
+            "--",
+            "/bin/sh",
+            "-c",
+            "cat /data/seed.txt && echo from-container > /data/reply.txt",
+        ],
+        cwd=_repo_root(),
+        env=_runtime_env(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "from-host" in result.stdout
+    reply = host_dir / "reply.txt"
+    assert reply.exists(), "container write to rw volume did not reach the host"
+    assert reply.read_text().strip() == "from-container"
+
+
+def test_ro_volume_rejects_writes(tmp_path):
+    _require_root()
+    _require_cgroups_v2()
+    rootfs = _copy_rootfs(tmp_path)
+
+    host_dir = tmp_path / "hostvol-ro"
+    host_dir.mkdir()
+    (host_dir / "keep.txt").write_text("immutable")
+
+    # Write attempt must fail inside the container...
+    write_attempt = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "mini_docker",
+            "run",
+            "--no-overlay",
+            "--volume",
+            f"{host_dir}:/data:ro",
+            rootfs,
+            "--",
+            "/bin/sh",
+            "-c",
+            "echo tampered > /data/keep.txt",
+        ],
+        cwd=_repo_root(),
+        env=_runtime_env(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert write_attempt.returncode != 0, (
+        "write to ro volume succeeded — read-only remount is not enforced"
+    )
+
+    # ...and the file content must be untouched on the host.
+    assert (host_dir / "keep.txt").read_text() == "immutable"
+
+
+def test_failed_volume_mount_fails_container_start(tmp_path):
+    _require_root()
+    _require_cgroups_v2()
+    rootfs = _copy_rootfs(tmp_path)
+
+    # A bind source that cannot be created/mounted must abort startup instead
+    # of silently starting the container without its declared volume.
+    bad_host = tmp_path / "not-a-dir" / "file"  # parent is a regular file
+    (tmp_path / "not-a-dir").write_text("blocker")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "mini_docker",
+            "run",
+            "--no-overlay",
+            "--volume",
+            f"{bad_host}:/data:ro",
+            rootfs,
+            "--",
+            "/bin/sh",
+            "-c",
+            "echo should-not-run",
+        ],
+        cwd=_repo_root(),
+        env=_runtime_env(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0, (
+        "container started despite a failed volume mount (fail-open behavior)"
+    )
+    assert "should-not-run" not in result.stdout
