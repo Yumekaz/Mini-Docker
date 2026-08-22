@@ -30,6 +30,7 @@ from mini_docker.filesystem import (
     MS_PRIVATE,
     MS_RDONLY,
     MS_REC,
+    MS_REMOUNT,
     cleanup_overlay,
     mount,
     setup_chroot_filesystem,
@@ -653,7 +654,9 @@ class Container:
             except Exception:
                 pass
 
-            # Mount custom volumes
+            # Mount custom volumes. Fail closed: a broken bind must not
+            # silently start the container without a declared volume, and a
+            # failed read-only remount must not leave an ro volume writable.
             for vol in config.volumes:
                 host_path = vol.get("host")
                 container_path = vol.get("container")
@@ -663,18 +666,25 @@ class Container:
                 rel_container_path = container_path.lstrip("/")
                 target_path = os.path.join(rootfs_to_pivot, rel_container_path)
                 os.makedirs(target_path, exist_ok=True)
-                flags = MS_BIND | MS_REC
-                if mode == "ro":
-                    flags |= MS_RDONLY
                 try:
                     logger.write(
                         f"Mounting volume: {host_path} -> {target_path} ({mode})\n"
                     )
-                    mount(host_path, target_path, None, flags)
+                    mount(host_path, target_path, None, MS_BIND | MS_REC)
+                    if mode == "ro":
+                        # Two-step remount: RDONLY is not reliably applied when
+                        # combined with MS_BIND in the original bind call.
+                        mount(
+                            host_path,
+                            target_path,
+                            None,
+                            MS_BIND | MS_REC | MS_REMOUNT | MS_RDONLY,
+                        )
                 except Exception as e:
-                    logger.write(
-                        f"Warning: Failed to mount volume {host_path} -> {container_path}: {e}\n"
-                    )
+                    raise ContainerInternalError(
+                        f"Failed to mount volume {host_path} -> "
+                        f"{container_path} (mode={mode}): {e}"
+                    ) from e
 
             # Use pivot_root for better isolation, fallback to chroot
             try:
@@ -804,6 +814,10 @@ class Container:
 
     def _exec_workload(self, config: ContainerConfig) -> None:
         """Replace the current process with the configured workload."""
+        # Containers must not inherit the daemon's umask: a hardened daemon
+        # umask (e.g. 027) would otherwise leak into every workload, making
+        # container-written volume files unreadable to non-root host users.
+        os.umask(0o022)
         os.execvp(config.command[0], config.command)
 
     def _supervise_pid_namespace_workload(
@@ -1121,6 +1135,9 @@ class Container:
                     os.setgid(gid)
                 if uid is not None:
                     os.setuid(uid)
+
+                # Standard container umask: never inherit the daemon's.
+                os.umask(0o022)
 
                 # Execute
                 os.execvp(command[0], command)
