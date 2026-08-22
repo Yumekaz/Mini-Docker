@@ -105,3 +105,6 @@ config.local.json
 docs/_build/
 site/
 rootfs/
+
+# OCI sample bundle rootfs is generated locally (see docs/CLI-COMMANDS.md)
+oci-bundle/rootfs/
