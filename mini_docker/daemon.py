@@ -25,6 +25,7 @@ from mini_docker.container import (
 )
 from mini_docker.metadata import ContainerLookupAmbiguityError, asdict
 from mini_docker.utils import DEFAULT_SOCKET_PATH, ensure_directories, check_root
+from mini_docker.cli import parse_user
 
 if hasattr(socketserver, "ThreadingUnixStreamServer"):
 
@@ -218,6 +219,20 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                 network_mode = host_config.get("NetworkMode", "bridge")
                 network_param = network_mode != "none"
 
+                # Optional user spec ("uid", "uid:gid", or a host username) so
+                # callers can run one-off tasks as a non-root host user (e.g.
+                # PaaS backup tasks whose dump files must stay readable by the
+                # socket owner).
+                uid_param, gid_param = None, None
+                user_spec = body.get("User") or ""
+                if user_spec:
+                    uid_param, gid_param = parse_user(user_spec)
+                    if uid_param is None:
+                        self.send_error_response(
+                            400, f"invalid User {user_spec!r}"
+                        )
+                        return
+
                 config = self.container_manager.create(
                     rootfs=rootfs,
                     command=command,
@@ -227,6 +242,8 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                     detach=True,
                     network=network_param,
                     env=env_dict if env_dict else None,
+                    uid=uid_param,
+                    gid=gid_param,
                     rootless=body.get("Rootless", not check_root()),
                 )
                 self.send_json_response(201, {"Id": config.id})
