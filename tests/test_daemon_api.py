@@ -85,6 +85,46 @@ def test_run_daemon_secures_socket_permissions(monkeypatch, tmp_path):
     chmod.assert_called_once_with(socket_path, 0o600)
 
 
+def test_run_daemon_refuses_to_replace_a_live_socket(monkeypatch, tmp_path):
+    socket_path = str(tmp_path / "mini-docker.sock")
+    (tmp_path / "mini-docker.sock").touch()
+    monkeypatch.setattr("mini_docker.daemon.ensure_directories", mock.Mock())
+    monkeypatch.setattr("mini_docker.daemon._socket_accepts_connections", lambda path: True)
+    remove = mock.Mock(wraps=__import__("os").remove)
+    monkeypatch.setattr("mini_docker.daemon.os.remove", remove)
+
+    try:
+        run_daemon(socket_path)
+    except RuntimeError as exc:
+        assert "already listening" in str(exc)
+    else:
+        raise AssertionError("live daemon socket was replaced")
+
+    remove.assert_not_called()
+
+
+def test_run_daemon_replaces_only_a_stale_socket(monkeypatch, tmp_path):
+    socket_path = str(tmp_path / "mini-docker.sock")
+    (tmp_path / "mini-docker.sock").touch()
+    monkeypatch.setattr("mini_docker.daemon.ensure_directories", mock.Mock())
+    monkeypatch.setattr("mini_docker.daemon._socket_accepts_connections", lambda path: False)
+    remove = mock.Mock(wraps=__import__("os").remove)
+    monkeypatch.setattr("mini_docker.daemon.os.remove", remove)
+    monkeypatch.setattr("mini_docker.daemon.os.chmod", mock.Mock())
+
+    class DummyServer:
+        def __init__(self, path, handler):
+            self.path = path
+        def __enter__(self): return self
+        def __exit__(self, exc_type, exc, tb): return False
+        def serve_forever(self): return None
+
+    monkeypatch.setattr("mini_docker.daemon.UnixSocketHTTPServer", DummyServer)
+    run_daemon(socket_path)
+
+    remove.assert_called_once_with(socket_path)
+
+
 def test_run_daemon_warns_for_world_accessible_explicit_mode(monkeypatch, tmp_path):
     socket_path = str(tmp_path / "mini-docker.sock")
     chmod = mock.Mock()

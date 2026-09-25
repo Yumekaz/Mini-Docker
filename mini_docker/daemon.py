@@ -9,6 +9,7 @@ the container lifecycle (create, start, stop, rm, ps, logs, etc.).
 
 import json
 import os
+import socket
 import socketserver
 import urllib.parse
 import warnings
@@ -321,6 +322,25 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
 DEFAULT_SOCKET_MODE = 0o660
 
 
+def _socket_accepts_connections(socket_path: str) -> bool:
+    """Return true only when another Unix-socket server accepts a connection.
+
+    An existing socket pathname is not enough evidence of a live daemon: a
+    process crash leaves stale paths behind. Permission or unexpected probing
+    failures are treated as active/unknown by the caller, preserving the socket
+    instead of stealing it from an operator-managed daemon.
+    """
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(0.5)
+    try:
+        probe.connect(socket_path)
+        return True
+    except ConnectionRefusedError:
+        return False
+    finally:
+        probe.close()
+
+
 def _warn_for_insecure_socket_mode(
     socket_path: str, socket_mode: int, acknowledged: bool
 ):
@@ -359,6 +379,17 @@ def run_daemon(
     os.makedirs(socket_dir, exist_ok=True)
 
     if os.path.exists(socket_path):
+        try:
+            active = _socket_accepts_connections(socket_path)
+        except OSError as exc:
+            raise RuntimeError(
+                f"refusing to replace existing Mini-Docker socket {socket_path!r}: {exc}"
+            ) from exc
+        if active:
+            raise RuntimeError(
+                f"Mini-Docker daemon is already listening on {socket_path!r}; "
+                "stop it before starting another daemon"
+            )
         os.remove(socket_path)
 
     with UnixSocketHTTPServer(socket_path, DockerAPIHandler) as httpd:
