@@ -14,12 +14,14 @@ interfaces.
 
 ## Current Status
 
-Mini-Docker is a serious runtime prototype moving toward a PaaS backend.
+Mini-Docker is a Linux runtime prototype moving toward a PaaS backend.
 
 It is not yet an audited production runtime for arbitrary untrusted
 multi-tenant workloads. The right current use is controlled Linux-server
 experimentation, trusted or semi-trusted workloads, and building the surrounding
 PaaS control plane while hardening the runtime.
+
+The 2026-10-08 local privileged proof ran the namespace, mount, container and volume integration cases. The suite's empty root-test placeholder has been removed so an unconditional pass cannot be mistaken for isolation evidence. DuraFlow separately exercised successful commands, environment handling and timeout cancellation using disposable BusyBox rootfs fixtures. Retained results live in the sibling Cairn validation record; these checks do not replace a hostile-workload security audit.
 
 ## Why Mini-Docker Exists
 

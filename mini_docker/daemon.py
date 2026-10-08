@@ -16,6 +16,7 @@ import warnings
 from http.server import BaseHTTPRequestHandler
 from typing import Any, Dict
 
+from mini_docker.cli import parse_user
 from mini_docker.container import (
     Container,
     ContainerError,
@@ -25,8 +26,7 @@ from mini_docker.container import (
     ContainerNotFoundError,
 )
 from mini_docker.metadata import ContainerLookupAmbiguityError, asdict
-from mini_docker.utils import DEFAULT_SOCKET_PATH, ensure_directories, check_root
-from mini_docker.cli import parse_user
+from mini_docker.utils import DEFAULT_SOCKET_PATH, check_root, ensure_directories
 
 if hasattr(socketserver, "ThreadingUnixStreamServer"):
 
@@ -229,9 +229,7 @@ class DockerAPIHandler(BaseHTTPRequestHandler):
                 if user_spec:
                     uid_param, gid_param = parse_user(user_spec)
                     if uid_param is None:
-                        self.send_error_response(
-                            400, f"invalid User {user_spec!r}"
-                        )
+                        self.send_error_response(400, f"invalid User {user_spec!r}")
                         return
 
                 config = self.container_manager.create(

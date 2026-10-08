@@ -78,6 +78,70 @@ class ContainerInternalError(ContainerError):
     """Raised when an unexpected internal runtime failure occurs."""
 
 
+def _close_inherited_descriptors(keep_fds):
+    """Do not let a forked supervisor keep daemon/client sockets alive.
+
+    CLOEXEC alone is insufficient: the supervisor deliberately stays in
+    Python while its workload executes. Only stdio and startup pipes cross
+    this initial fork; logs and metadata are opened afterwards in the child.
+    """
+    keep = {0, 1, 2, *keep_fds}
+    try:
+        descriptors = [int(name) for name in os.listdir("/proc/self/fd")]
+    except OSError:
+        limit = os.sysconf("SC_OPEN_MAX")
+        start = 3
+        for descriptor in sorted(fd for fd in keep if fd >= 3):
+            os.closerange(start, descriptor)
+            start = descriptor + 1
+        os.closerange(start, limit)
+        return
+    for descriptor in descriptors:
+        if descriptor not in keep:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def _command_for_log(command, environment):
+    """Redact known credentials without changing the executed argv."""
+    secret_values = [
+        str(value)
+        for key, value in (environment or {}).items()
+        if value
+        and any(
+            word in key.upper()
+            for word in (
+                "PASSWORD",
+                "PASSWD",
+                "TOKEN",
+                "SECRET",
+                "API_KEY",
+                "PRIVATE_KEY",
+            )
+        )
+    ]
+    result = []
+    redact_next = False
+    for argument in command:
+        text = str(argument)
+        if redact_next:
+            text = "[REDACTED]"
+            redact_next = False
+        elif text in ("--password", "--passwd", "--token", "--secret", "-a"):
+            redact_next = True
+        elif any(
+            text.startswith(option + "=")
+            for option in ("--password", "--passwd", "--token", "--secret")
+        ):
+            text = text.split("=", 1)[0] + "=[REDACTED]"
+        for value in secret_values:
+            text = text.replace(value, "[REDACTED]")
+        result.append(text)
+    return " ".join(result)
+
+
 def _exit_code_from_wait_status(status: int) -> int:
     """Convert a waitpid status into a shell-style process exit code."""
     if hasattr(os, "WIFEXITED") and os.WIFEXITED(status):
@@ -304,6 +368,7 @@ class Container:
         if pid == 0:
             os.close(p2c_w)
             os.close(c2p_r)
+            _close_inherited_descriptors({p2c_r, c2p_w})
             # Child process - this becomes the container
             try:
                 self._run_container(
@@ -439,14 +504,16 @@ class Container:
                     os.close(c2p_r)
                     raise ContainerError(f"Network setup failed: {e}") from e
 
+            # Publish parent startup state before releasing the child. The
+            # supervisor then publishes the actual workload PID and result;
+            # a late parent write must not overwrite that newer generation.
+            update_container_status(container_id, "running", pid=pid)
+
             # Signal child to proceed
             try:
                 os.write(p2c_w, b"X")
             except OSError:
                 pass
-
-            # Update status
-            update_container_status(container_id, "running", pid=pid)
 
             if config.pod_id:
                 self.pods.add_container(config.pod_id, config.id)
@@ -719,7 +786,7 @@ class Container:
                 os.setuid(config.uid)
 
             # Execute command
-            logger.write(f"Starting: {' '.join(config.command)}\n")
+            logger.write(f"Starting: {_command_for_log(config.command, config.env)}\n")
             logger.close()
 
             if not attach:
@@ -864,8 +931,9 @@ class Container:
         config.pid = workload_pid
         config.supervisor_pid = os.getpid()
         config.status = "running"
-        if config.started_at is None:
-            config.started_at = time.time()
+        config.started_at = time.time()
+        config.finished_at = None
+        config.exit_code = None
         _write_config_to_fd(metadata_fd, config)
 
         def forward_signal(signum, _frame):

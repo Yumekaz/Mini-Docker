@@ -1,6 +1,10 @@
 name: Root Runtime Validation
 
 on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -36,8 +40,18 @@ jobs:
       - name: Resolve Python runtime
         run: |
           set -euo pipefail
+          python -m pip install pytest
           python -m mini_docker --help > /dev/null
           echo "PYTHON_BIN=$(command -v python)" >> "$GITHUB_ENV"
+
+      - name: Prepare static disposable BusyBox rootfs
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y busybox-static iproute2 iptables
+          mkdir -p rootfs/{bin,dev,proc,sys,tmp,etc}
+          cp /usr/bin/busybox rootfs/bin/busybox
+          for applet in sh echo cat sleep dd mkdir rmdir sync httpd printf; do ln -sf busybox "rootfs/bin/$applet"; done
 
       - name: Prepare isolated runtime paths
         run: |
@@ -82,6 +96,21 @@ jobs:
           command -v iptables
           test -e /proc/self/ns/mnt
           test -e /sys/fs/cgroup/cgroup.controllers
+
+      - name: Complete privileged runtime suite without prerequisite skips
+        run: |
+          set -euo pipefail
+          mkdir -p verification
+          sudo --non-interactive env PYTHONPATH="$GITHUB_WORKSPACE" \
+            "$PYTHON_BIN" -m pytest -q -p no:cacheprovider \
+            --junitxml="$GITHUB_WORKSPACE/verification/root-results.xml" \
+            tests/test_linux_runtime_integration.py
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          root=ET.parse('verification/root-results.xml').getroot()
+          assert len(root.findall('.//testcase'))>=5
+          assert not root.findall('.//skipped'), 'required privileged runtime cases were skipped'
+          PY
 
       - name: Run root host doctor
         run: |

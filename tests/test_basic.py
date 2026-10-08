@@ -12,11 +12,6 @@ import sys
 import pytest
 
 
-def _geteuid() -> int:
-    """Return an effective UID when supported, otherwise act as non-root."""
-    return getattr(os, "geteuid", lambda: 1)()
-
-
 class TestImports:
     """Test that all modules can be imported."""
 
@@ -161,17 +156,6 @@ class TestUtilities:
         from mini_docker import utils
 
         assert utils is not None
-
-
-# Conditional tests that require root
-@pytest.mark.skipif(_geteuid() != 0, reason="Requires root privileges")
-class TestRootRequired:
-    """Tests that require root privileges."""
-
-    def test_placeholder_for_root_tests(self):
-        """Placeholder for tests requiring root."""
-        # Add actual container tests here when running as root
-        pass
 
 
 # Conditional tests for cgroups v2

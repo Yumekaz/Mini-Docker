@@ -77,7 +77,9 @@ def _install_python_memory_hog(rootfs):
 
     copy_absolute(executable)
     shutil.copytree(stdlib, os.path.join(rootfs, "usr", "lib", version), symlinks=True)
-    ldd = subprocess.run(["ldd", executable], capture_output=True, text=True, check=False)
+    ldd = subprocess.run(
+        ["ldd", executable], capture_output=True, text=True, check=False
+    )
     if ldd.returncode != 0:
         pytest.skip("ldd is unavailable for memory-limit test")
     libraries = re.findall(r"(?:=>\s+)?(/\S+)", ldd.stdout)
@@ -237,9 +239,9 @@ def test_ro_volume_rejects_writes(tmp_path):
             "echo tampered > /data/keep.txt",
         ],
     )
-    assert write_attempt.returncode != 0, (
-        "write to ro volume succeeded — read-only remount is not enforced"
-    )
+    assert (
+        write_attempt.returncode != 0
+    ), "write to ro volume succeeded — read-only remount is not enforced"
 
     # ...and the file content must be untouched on the host.
     assert (host_dir / "keep.txt").read_text() == "immutable"
@@ -272,7 +274,7 @@ def test_failed_volume_mount_fails_container_start(tmp_path):
             "echo should-not-run",
         ],
     )
-    assert result.returncode != 0, (
-        "container started despite a failed volume mount (fail-open behavior)"
-    )
+    assert (
+        result.returncode != 0
+    ), "container started despite a failed volume mount (fail-open behavior)"
     assert "should-not-run" not in result.stdout

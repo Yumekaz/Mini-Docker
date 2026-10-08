@@ -89,7 +89,9 @@ def test_run_daemon_refuses_to_replace_a_live_socket(monkeypatch, tmp_path):
     socket_path = str(tmp_path / "mini-docker.sock")
     (tmp_path / "mini-docker.sock").touch()
     monkeypatch.setattr("mini_docker.daemon.ensure_directories", mock.Mock())
-    monkeypatch.setattr("mini_docker.daemon._socket_accepts_connections", lambda path: True)
+    monkeypatch.setattr(
+        "mini_docker.daemon._socket_accepts_connections", lambda path: True
+    )
     remove = mock.Mock(wraps=__import__("os").remove)
     monkeypatch.setattr("mini_docker.daemon.os.remove", remove)
 
@@ -107,7 +109,9 @@ def test_run_daemon_replaces_only_a_stale_socket(monkeypatch, tmp_path):
     socket_path = str(tmp_path / "mini-docker.sock")
     (tmp_path / "mini-docker.sock").touch()
     monkeypatch.setattr("mini_docker.daemon.ensure_directories", mock.Mock())
-    monkeypatch.setattr("mini_docker.daemon._socket_accepts_connections", lambda path: False)
+    monkeypatch.setattr(
+        "mini_docker.daemon._socket_accepts_connections", lambda path: False
+    )
     remove = mock.Mock(wraps=__import__("os").remove)
     monkeypatch.setattr("mini_docker.daemon.os.remove", remove)
     monkeypatch.setattr("mini_docker.daemon.os.chmod", mock.Mock())
@@ -115,9 +119,15 @@ def test_run_daemon_replaces_only_a_stale_socket(monkeypatch, tmp_path):
     class DummyServer:
         def __init__(self, path, handler):
             self.path = path
-        def __enter__(self): return self
-        def __exit__(self, exc_type, exc, tb): return False
-        def serve_forever(self): return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def serve_forever(self):
+            return None
 
     monkeypatch.setattr("mini_docker.daemon.UnixSocketHTTPServer", DummyServer)
     run_daemon(socket_path)

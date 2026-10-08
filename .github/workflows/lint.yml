@@ -87,4 +87,4 @@ jobs:
 
       - name: Run security check
         run: |
-          bandit -r mini_docker/ -ll || true
+          bandit -r mini_docker/ -ll

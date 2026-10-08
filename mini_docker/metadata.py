@@ -268,8 +268,9 @@ def update_container_status(
         if pid is not None:
             config.pid = pid
             config.supervisor_pid = pid
-        if config.started_at is None:
-            config.started_at = time.time()
+        config.started_at = time.time()
+        config.finished_at = None
+        config.exit_code = None
 
     if status == "stopped":
         config.pid = None
