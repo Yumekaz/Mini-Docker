@@ -16,7 +16,7 @@ Uses unshare(2) to create new namespaces and setns(2) to enter existing ones.
 import ctypes
 import os
 import sys
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from mini_docker.utils import libc
 
@@ -229,6 +229,28 @@ def enter_all_namespaces(pid: int, namespaces: Optional[List[str]] = None) -> No
         except NamespaceError:
             # Some namespaces might not be available
             pass
+
+
+def capture_namespace_fds(pid: int, namespaces: List[str]) -> Dict[str, int]:
+    """Pin namespace objects before a caller rechecks its process pidfd."""
+    handles = {}
+    try:
+        for namespace in namespaces:
+            if namespace not in NAMESPACE_FLAGS:
+                raise NamespaceError(f"Unknown namespace type: {namespace}")
+            handles[namespace] = os.open(f"/proc/{pid}/ns/{namespace}", os.O_RDONLY)
+        return handles
+    except BaseException:
+        for fd in handles.values():
+            os.close(fd)
+        raise
+
+
+def enter_namespace_fds(handles: Dict[str, int]) -> None:
+    """Fail closed; never silently continue execution in host namespaces."""
+    for namespace in ("user", "mnt", "uts", "ipc", "net", "cgroup", "pid"):
+        if namespace in handles:
+            setns(handles[namespace], NAMESPACE_FLAGS[namespace])
 
 
 def get_namespace_id(pid: int, nstype: str) -> Optional[str]:

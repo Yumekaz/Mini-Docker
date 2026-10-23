@@ -278,3 +278,44 @@ def test_failed_volume_mount_fails_container_start(tmp_path):
         result.returncode != 0
     ), "container started despite a failed volume mount (fail-open behavior)"
     assert "should-not-run" not in result.stdout
+
+
+def test_verified_pidfd_stop_and_exec_use_owned_container(tmp_path):
+    _require_root()
+    _require_cgroups_v2()
+    rootfs = _copy_rootfs(tmp_path)
+    script = """
+import sys, time
+from mini_docker.container import Container
+from mini_docker.metadata import load_container_config
+from mini_docker.process_identity import capture_identity
+manager=Container()
+config=manager.create(sys.argv[1], ['/bin/sleep','30'], detach=True)
+try:
+    manager.start(config.id, attach=False)
+    deadline=time.monotonic()+5
+    while time.monotonic()<deadline:
+        running=load_container_config(config.id)
+        if running.pid and running.pid != running.supervisor_pid and running.exec_ready:
+            break
+        time.sleep(.02)
+    assert running.status=='running'
+    assert running.pid_identity==capture_identity(running.pid)
+    assert running.supervisor_identity==capture_identity(running.supervisor_pid)
+    assert manager.exec(config.id,['/bin/sh','-c',
+        'test $$ -gt 1 && '
+        '/bin/busybox grep -q "^Seccomp:[[:space:]]*2$" /proc/self/status && '
+        '/bin/busybox grep -q "^NoNewPrivs:[[:space:]]*1$" /proc/self/status && '
+        'echo verified-exec'])==0
+    assert manager.stop(config.id,timeout=1)
+    assert load_container_config(config.id).status=='stopped'
+    print('verified-stop')
+finally:
+    current=load_container_config(config.id)
+    if current and current.status=='running':
+        manager.stop(config.id,timeout=0)
+"""
+    result = _run_root_container(tmp_path, [sys.executable, "-c", script, rootfs])
+    assert result.returncode == 0, result.stderr
+    assert "verified-exec" in result.stdout
+    assert "verified-stop" in result.stdout

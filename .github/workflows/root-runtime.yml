@@ -108,7 +108,8 @@ jobs:
           python - <<'PY'
           import xml.etree.ElementTree as ET
           root=ET.parse('verification/root-results.xml').getroot()
-          assert len(root.findall('.//testcase'))>=5
+          assert len(root.findall('.//testcase'))>=6
+          assert any(case.attrib.get('name')=='test_verified_pidfd_stop_and_exec_use_owned_container' for case in root.findall('.//testcase'))
           assert not root.findall('.//skipped'), 'required privileged runtime cases were skipped'
           PY
 

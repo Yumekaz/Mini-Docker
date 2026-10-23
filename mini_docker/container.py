@@ -48,12 +48,18 @@ from mini_docker.metadata import (
     update_container_status,
 )
 from mini_docker.namespaces import (
+    capture_namespace_fds,
     create_namespaces,
-    enter_all_namespaces,
+    enter_namespace_fds,
     setup_user_namespace,
 )
 from mini_docker.network import Network, configure_container_network, parse_port_mapping
 from mini_docker.pod import PodManager, load_pod_config
+from mini_docker.process_identity import (
+    ProcessIdentityError,
+    VerifiedProcess,
+    capture_identity,
+)
 from mini_docker.seccomp import Seccomp
 from mini_docker.utils import check_root, ensure_directories, get_overlay_paths
 
@@ -345,6 +351,10 @@ class Container:
         if attach is None:
             attach = not config.detach
 
+        if config.status == "unknown":
+            raise ContainerInvalidStateError(
+                "Unverified process identity; refusing duplicate start"
+            )
         if config.status == "running":
             raise ContainerInvalidStateError(
                 f"Container already running: {container_id}"
@@ -780,6 +790,8 @@ class Container:
             self._apply_capabilities(config, logger)
             self._apply_seccomp(config, logger)
 
+            if not config.rootless:
+                os.setgroups([])
             if config.gid is not None:
                 os.setgid(config.gid)
             if config.uid is not None:
@@ -906,21 +918,40 @@ class Container:
         if metadata_fd is None:
             raise ContainerInternalError("PID supervisor missing metadata fd")
 
+        identity_read, identity_write = os.pipe()
+        exec_read, exec_write = os.pipe()
         workload_pid = os.fork()
 
         if workload_pid == 0:
+            os.close(exec_read)
+            os.close(identity_write)
+            allowed = os.read(identity_read, 1)
+            os.close(identity_read)
+            if allowed != b"X":
+                os._exit(1)
             try:
                 os.close(metadata_fd)
             except OSError:
                 pass
-            self._prepare_and_exec_workload(
-                config,
-                logger,
-                attach,
-                detached_log_fd,
-            )
+            try:
+                # os.pipe descriptors are CLOEXEC: EOF in the supervisor
+                # proves that root/security setup reached the real exec.
+                self._prepare_and_exec_workload(
+                    config,
+                    logger,
+                    attach,
+                    detached_log_fd,
+                )
+            except BaseException:
+                os.write(exec_write, b"failed")
+                raise
             os._exit(127)
 
+        os.close(exec_write)
+        os.close(identity_read)
+        # Capture host identities before the workload changes /proc mounts.
+        config.pid_identity = capture_identity(workload_pid)
+        config.supervisor_identity = capture_identity(os.getpid())
         logger.close()
         if detached_log_fd is not None:
             try:
@@ -931,6 +962,7 @@ class Container:
         config.pid = workload_pid
         config.supervisor_pid = os.getpid()
         config.status = "running"
+        config.exec_ready = False
         config.started_at = time.time()
         config.finished_at = None
         config.exit_code = None
@@ -948,10 +980,21 @@ class Container:
             except (ValueError, OSError):
                 pass
 
+        os.write(identity_write, b"X")
+        os.close(identity_write)
+        try:
+            startup_error = os.read(exec_read, 64)
+        finally:
+            os.close(exec_read)
+        if not startup_error:
+            config.exec_ready = True
+            _write_config_to_fd(metadata_fd, config)
+
         _, status = os.waitpid(workload_pid, 0)
         exit_code = _exit_code_from_wait_status(status)
 
         config.status = "stopped"
+        config.exec_ready = False
         config.pid = None
         config.finished_at = time.time()
         config.exit_code = exit_code
@@ -975,6 +1018,10 @@ class Container:
         if not config:
             raise ContainerNotFoundError(f"Container not found: {container_id}")
 
+        if config.status == "unknown":
+            raise ContainerInvalidStateError(
+                "Unverified process identity; refusing duplicate restart"
+            )
         if config.status == "running":
             self.stop(container_id, timeout=timeout)
 
@@ -989,89 +1036,78 @@ class Container:
         return self.start(container_id, attach=False)
 
     def stop(self, container_id: str, timeout: int = 10) -> bool:
-        """
-        Stop a running container.
-
-        Args:
-            container_id: Container ID
-            timeout: Seconds to wait before SIGKILL
-
-        Returns:
-            True if stopped successfully
-        """
+        """Stop only a process whose boot/start identity matches a pinned pidfd."""
         config = load_container_config(container_id)
         if not config:
             raise ContainerNotFoundError(f"Container not found: {container_id}")
-
+        if config.status == "unknown":
+            raise ContainerInvalidStateError(
+                "Unverified process identity; no signal sent"
+            )
         if config.status != "running":
             raise ContainerInvalidStateError(f"Container not running: {container_id}")
-
         if not config.pid:
             return self._finalize_stopped_container(container_id, config)
-
         try:
-            # Check if process exists before sending signal
-            try:
-                os.kill(config.pid, 0)  # Check if process exists
-            except OSError as e:
-                if e.errno == errno.ESRCH:  # No such process
-                    return self._finalize_stopped_container(
-                        container_id, config, exit_code=0
-                    )
-                raise
-
-            # Send SIGTERM
-            os.kill(config.pid, signal.SIGTERM)
-
-            # Wait for process to exit. Reap direct children during the grace
-            # window; kill(pid, 0) remains true for zombies.
-            import time
-
-            exit_code = None
-            for _ in range(max(timeout, 0) * 10):
-                exit_code = _try_reap_process(config.pid)
-                if exit_code is not None:
-                    break
-
-                try:
-                    os.kill(config.pid, 0)
-                except OSError as e:
-                    if e.errno == errno.ESRCH:
-                        exit_code = 0
-                        break
-                    raise
-
-                time.sleep(0.1)
-
-            if exit_code is None:
-                # Process still running, send SIGKILL
-                try:
-                    os.kill(config.pid, signal.SIGKILL)
-                except OSError as e:
-                    if e.errno != errno.ESRCH:
-                        raise
-                    exit_code = 0
-
-                for _ in range(10):
-                    reaped_exit_code = _try_reap_process(config.pid)
-                    if reaped_exit_code is not None:
-                        exit_code = reaped_exit_code
-                        break
+            with VerifiedProcess(config.pid, config.pid_identity) as process:
+                if not process.alive():
+                    return self._finalize_stopped_container(container_id, config)
+                process.send(signal.SIGTERM)
+                deadline = time.monotonic() + max(timeout, 0)
+                while process.alive() and time.monotonic() < deadline:
                     time.sleep(0.1)
-
-                if exit_code is None:
+                exit_code = None
+                if process.alive():
+                    process.send(signal.SIGKILL)
                     exit_code = 128 + signal.SIGKILL
-
-            return self._finalize_stopped_container(
-                container_id, config, exit_code=exit_code
-            )
-
-        except OSError as e:
-            if e.errno == errno.ESRCH:  # No such process
+                    kill_deadline = time.monotonic() + 2.0
+                    while process.alive() and time.monotonic() < kill_deadline:
+                        time.sleep(0.02)
+                    if process.alive():
+                        raise ContainerInternalError(
+                            "Verified workload did not exit after SIGKILL"
+                        )
+                # The supervisor can still publish metadata after its workload
+                # exits. Quiesce that writer before permitting another start.
+                if config.supervisor_pid and config.supervisor_pid != config.pid:
+                    try:
+                        with VerifiedProcess(
+                            config.supervisor_pid, config.supervisor_identity
+                        ) as supervisor:
+                            deadline = time.monotonic() + 2.0
+                            while supervisor.alive() and time.monotonic() < deadline:
+                                time.sleep(0.02)
+                            if supervisor.alive():
+                                raise ContainerInternalError(
+                                    "Verified supervisor has not finished stopping"
+                                )
+                    except ProcessLookupError:
+                        pass
+                # waitid(P_PIDFD) cannot reap an unrelated reused numeric PID.
+                if hasattr(os, "P_PIDFD"):
+                    try:
+                        result = os.waitid(
+                            os.P_PIDFD, process.fd, os.WEXITED | os.WNOHANG
+                        )
+                        if result is not None:
+                            exit_code = (
+                                result.si_status
+                                if result.si_code == os.CLD_EXITED
+                                else 128 + result.si_status
+                            )
+                    except ChildProcessError:
+                        pass
                 return self._finalize_stopped_container(
-                    container_id, config, exit_code=0
+                    container_id, config, exit_code=exit_code
                 )
-            raise ContainerInternalError(f"Failed to stop container: {e}")
+        except ProcessIdentityError as exc:
+            raise ContainerInvalidStateError(str(exc)) from exc
+        except ProcessLookupError:
+            return self._finalize_stopped_container(container_id, config)
+        except OSError as exc:
+            raise ContainerInternalError(
+                f"Safe process control unavailable: {exc}"
+            ) from exc
 
     def remove(
         self, container_id: str, force: bool = False, remove_volumes: bool = False
@@ -1091,6 +1127,10 @@ class Container:
         if not config:
             raise ContainerNotFoundError(f"Container not found: {container_id}")
 
+        if config.status == "unknown":
+            raise ContainerInvalidStateError(
+                "Unverified process identity; refusing cleanup"
+            )
         if config.status == "running":
             if force:
                 self.stop(container_id, timeout=5)
@@ -1169,28 +1209,86 @@ class Container:
 
         if config.status != "running" or not config.pid:
             raise ContainerError(f"Container not running: {container_id}")
+        if not config.exec_ready:
+            raise ContainerInvalidStateError(
+                "Container root/security setup has not reached a verified exec"
+            )
+
+        handles = {}
+        root_fd = None
+        process = None
+        try:
+            process = VerifiedProcess(config.pid, config.pid_identity)
+            namespaces = list(config.namespaces)
+            if config.rootless and "user" not in namespaces:
+                namespaces.insert(0, "user")
+            handles = capture_namespace_fds(config.pid, namespaces)
+            # Pin the actual root while /proc still refers to the host PID.
+            # The configured host overlay path is not visible after setns
+            # into a pivot_root'ed workload's mount namespace.
+            root_fd = os.open(
+                "/proc/{}/root".format(config.pid),
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+            )
+            if not process.alive():
+                raise ProcessIdentityError(
+                    "process identity exited before namespace capture"
+                )
+        except (OSError, ProcessIdentityError, RuntimeError) as exc:
+            for fd in handles.values():
+                os.close(fd)
+            if root_fd is not None:
+                os.close(root_fd)
+            if process is not None:
+                process.close()
+            raise ContainerInvalidStateError(
+                f"Cannot verify exec process identity: {exc}"
+            ) from exc
 
         # Fork to create exec process
-        pid = os.fork()
+        try:
+            pid = os.fork()
+        except BaseException:
+            for fd in handles.values():
+                os.close(fd)
+            os.close(root_fd)
+            process.close()
+            raise
 
         if pid == 0:
             # Child - enter container namespaces and exec
             try:
-                # Enter all container namespaces
-                enter_all_namespaces(config.pid)
+                _close_inherited_descriptors(
+                    set(handles.values()) | {process.fd, root_fd}
+                )
+                if not process.alive():
+                    raise ProcessIdentityError("exec process identity exited")
+                # An exec'd process must not bypass the running workload's
+                # resource limits just because it originated in the daemon.
+                self._setup_cgroup(config, sys.stderr)
+                process.close()
+                enter_namespace_fds(handles)
+                for fd in handles.values():
+                    os.close(fd)
+                # setns for PID affects only future children, not this process.
+                if "pid" in handles:
+                    nested_pid = os.fork()
+                    if nested_pid:
+                        _, nested_status = os.waitpid(nested_pid, 0)
+                        os._exit(_exit_code_from_wait_status(nested_status))
 
-                # Change to container root
-                if config.use_overlay and config.overlay_merged:
-                    os.chroot(config.overlay_merged)
-                elif config.rootfs:
-                    os.chroot(config.rootfs)
-
+                os.fchdir(root_fd)
+                os.chroot(".")
+                os.close(root_fd)
                 os.chdir(workdir or config.workdir or "/")
 
                 # Set up environment
+                os.environ.clear()
                 os.environ["PATH"] = (
                     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
                 )
+                os.environ["HOME"] = "/root"
+                os.environ["HOSTNAME"] = config.hostname
                 for key, value in config.env.items():
                     os.environ[key] = value
                 # Add additional environment variables
@@ -1198,11 +1296,18 @@ class Container:
                     for key, value in env.items():
                         os.environ[key] = value
 
-                # Change user if specified
-                if gid is not None:
-                    os.setgid(gid)
-                if uid is not None:
-                    os.setuid(uid)
+                self._apply_capabilities(config, sys.stderr)
+                self._apply_seccomp(config, sys.stderr)
+                # Inherit the declared workload identity unless an explicit
+                # trusted-controller override was requested.
+                selected_gid = config.gid if gid is None else gid
+                selected_uid = config.uid if uid is None else uid
+                if not config.rootless:
+                    os.setgroups([])
+                if selected_gid is not None:
+                    os.setgid(selected_gid)
+                if selected_uid is not None:
+                    os.setuid(selected_uid)
 
                 # Standard container umask: never inherit the daemon's.
                 os.umask(0o022)
@@ -1215,6 +1320,10 @@ class Container:
                 os._exit(1)
         else:
             # Parent - wait for child
+            process.close()
+            for fd in handles.values():
+                os.close(fd)
+            os.close(root_fd)
             _, status = os.waitpid(pid, 0)
             if os.WIFEXITED(status):
                 return os.WEXITSTATUS(status)

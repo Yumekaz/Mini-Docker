@@ -12,6 +12,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional
 
+from mini_docker.process_identity import ProcessIdentityError, capture_identity
 from mini_docker.utils import (
     CONTAINERS_PATH,
     ensure_directories,
@@ -101,6 +102,9 @@ class ContainerConfig:
     status: str = "created"
     pid: Optional[int] = None
     supervisor_pid: Optional[int] = None
+    pid_identity: Optional[Dict] = None
+    supervisor_identity: Optional[Dict] = None
+    exec_ready: bool = False
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
@@ -158,35 +162,44 @@ def _hydrate_container_config(data: Dict) -> Optional[ContainerConfig]:
 def _refresh_container_state(config: ContainerConfig) -> ContainerConfig:
     if config.status != "running":
         return config
-
     super_pid = (
         config.supervisor_pid if config.supervisor_pid is not None else config.pid
     )
-    if super_pid and is_process_alive(super_pid):
+    uncertain = False
+    supervisor_identity = (
+        config.supervisor_identity
+        if config.supervisor_pid is not None
+        else config.pid_identity
+    )
+    for pid, identity in (
+        (super_pid, supervisor_identity),
+        (config.pid, config.pid_identity),
+    ):
+        if not pid:
+            continue
+        try:
+            actual = capture_identity(pid)
+            if identity == actual and is_process_alive(pid):
+                return config
+            if identity is None and is_process_alive(pid):
+                uncertain = True
+        except ProcessLookupError:
+            pass
+        except ProcessIdentityError:
+            uncertain = True
+    if uncertain:
+        config.status = "unknown"
         return config
-
-    if not is_process_alive(config.pid):
-        config.status = "stopped"
-        if config.finished_at is None:
-            config.finished_at = time.time()
-
-        # Try to reap the zombie to get the exit code if possible.
-        # This will only succeed if the caller is the direct parent process.
-        if config.pid and config.exit_code is None:
-            try:
-                import os
-
-                pid, status = os.waitpid(config.pid, os.WNOHANG)
-                if pid != 0:
-                    config.exit_code = (
-                        os.WEXITSTATUS(status) if os.WIFEXITED(status) else -1
-                    )
-            except Exception:
-                pass
-
-        config.pid = None
-        save_container_config(config)
-
+    # A known identity mismatch is not our process. Do not signal or reap it.
+    config.status = "stopped"
+    if config.finished_at is None:
+        config.finished_at = time.time()
+    config.pid = None
+    config.supervisor_pid = None
+    config.pid_identity = None
+    config.supervisor_identity = None
+    config.exec_ready = False
+    save_container_config(config)
     return config
 
 
@@ -265,16 +278,22 @@ def update_container_status(
     config.status = status
 
     if status == "running":
+        config.exec_ready = False
         if pid is not None:
             config.pid = pid
             config.supervisor_pid = pid
+            config.pid_identity = capture_identity(pid)
+            config.supervisor_identity = dict(config.pid_identity)
         config.started_at = time.time()
         config.finished_at = None
         config.exit_code = None
 
     if status == "stopped":
+        config.exec_ready = False
         config.pid = None
         config.supervisor_pid = None
+        config.pid_identity = None
+        config.supervisor_identity = None
         config.finished_at = time.time()
         if exit_code is not None:
             config.exit_code = exit_code

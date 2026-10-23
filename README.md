@@ -29,6 +29,16 @@ These mechanisms are implemented, but their availability and enforcement depend 
 
 Requirements: Linux, Python **3.8+**, and root for the full runtime path. Full networking uses `ip` and `iptables`; filesystem/runtime checks also use host tools such as `mount` and `chroot`. A kernel with the needed namespaces, cgroups v2 and filesystem support is required.
 
+Safe lifecycle control also requires working Linux pidfd support (exposed by
+Python or libc). Persisted numeric PIDs alone never authorize signals: boot ID
+and process start time must match a pinned process handle. Legacy live metadata
+without that identity is reported as `unknown`; inspect it explicitly rather
+than automatically adopting, killing or starting a duplicate workload.
+
+Exec pins the verified namespaces and actual process root, waits for proven
+workload setup, and applies the workload's resource/security policies and user
+identity. It does not inherit the daemon's environment or supplementary groups.
+
 ```bash
 git clone https://github.com/Yumekaz/Mini-Docker.git
 cd Mini-Docker

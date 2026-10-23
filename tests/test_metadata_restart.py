@@ -19,8 +19,11 @@ def test_running_generation_clears_previous_completion_metadata(monkeypatch):
     )
     monkeypatch.setattr(metadata, "save_container_config", saved.append)
     monkeypatch.setattr(metadata.time, "time", lambda: 20.0)
+    identity = {"boot_id": "test-boot", "start_ticks": 123}
+    monkeypatch.setattr(metadata, "capture_identity", lambda pid: dict(identity))
     assert metadata.update_container_status("fixture", "running", pid=123)
     assert saved == [config]
     assert config.started_at == 20.0
     assert config.finished_at is None
     assert config.exit_code is None
+    assert config.pid_identity == identity
