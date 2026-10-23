@@ -17,6 +17,11 @@ def capture_identity(pid):
     try:
         with open("/proc/sys/kernel/random/boot_id") as stream:
             boot = stream.read().strip()
+    except OSError as exc:
+        # Missing/hidden boot metadata is uncertainty, not evidence that an
+        # otherwise live PID is gone. Never authorize duplicate startup.
+        raise ProcessIdentityError("cannot verify host boot identity") from exc
+    try:
         with open("/proc/{}/stat".format(pid)) as stream:
             fields = stream.read().rsplit(") ", 1)[1].split()
         start = int(fields[19])

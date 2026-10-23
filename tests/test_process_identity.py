@@ -91,3 +91,23 @@ def test_mismatched_process_is_not_reported_as_running(monkeypatch):
     monkeypatch.setattr(metadata, "save_container_config", lambda _: None)
     assert metadata._refresh_container_state(config).status == "stopped"
     assert config.pid is None
+
+
+def test_missing_boot_identity_is_unknown_not_a_dead_process(monkeypatch):
+    import builtins
+
+    from mini_docker.process_identity import ProcessIdentityError, capture_identity
+
+    original_open = builtins.open
+
+    def guarded_open(path, *args, **kwargs):
+        if path == "/proc/sys/kernel/random/boot_id":
+            raise FileNotFoundError("boot metadata unavailable")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", guarded_open)
+    with pytest.raises(ProcessIdentityError, match="boot identity"):
+        capture_identity(os.getpid())
+    config = ContainerConfig(status="running", pid=os.getpid(), pid_identity={})
+    assert metadata._refresh_container_state(config).status == "unknown"
+    assert config.pid == os.getpid()
