@@ -160,6 +160,7 @@ def _hydrate_container_config(data: Dict) -> Optional[ContainerConfig]:
 
 
 def _refresh_container_state(config: ContainerConfig) -> ContainerConfig:
+    """Derive liveness without writing a potentially stale metadata snapshot."""
     if config.status != "running":
         return config
     super_pid = (
@@ -199,23 +200,66 @@ def _refresh_container_state(config: ContainerConfig) -> ContainerConfig:
     config.pid_identity = None
     config.supervisor_identity = None
     config.exec_ready = False
-    save_container_config(config)
     return config
+
+
+def _commit_refreshed_state(
+    container_id: str, expected: Dict, refreshed: ContainerConfig
+) -> Optional[ContainerConfig]:
+    """Commit only if the exact inspected snapshot is still current.
+
+    The supervisor writes through a pre-opened FD with flock, so use that same
+    inode and lock protocol, not rename or a read followed by an unlocked save.
+    Never create metadata that was deleted while liveness was being checked.
+    """
+    import fcntl
+
+    try:
+        fd = os.open(_container_config_path(container_id), os.O_RDWR | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            current = json.loads(os.read(fd, 65536).decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        if not isinstance(current, dict):
+            return None
+        if current != expected:
+            # A terminal publish, new generation, or other concurrent update
+            # wins in full. Never copy stale identities/exit data onto it.
+            return _hydrate_container_config(current)
+        payload = json.dumps(asdict(refreshed), indent=2).encode("utf-8")
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.ftruncate(fd, 0)
+        os.write(fd, payload)
+        return refreshed
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
 
 
 def _load_container_config_by_id(
     container_id: str, refresh_state: bool = True
 ) -> Optional[ContainerConfig]:
     data = _read_container_data(container_id)
-    if not data:
+    if not isinstance(data, dict) or not data:
         return None
 
-    config = _hydrate_container_config(data)
+    # Hydration replaces nested dictionaries with dataclasses. Keep the raw
+    # read snapshot intact for the locked compare-and-commit after liveness.
+    config = _hydrate_container_config(dict(data))
     if not config:
         return None
 
     if refresh_state:
         config = _refresh_container_state(config)
+        if data.get("status") == "running" and config.status == "stopped":
+            config = _commit_refreshed_state(container_id, data, config)
 
     return config
 

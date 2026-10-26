@@ -60,7 +60,9 @@ def create_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--name", "-n", help="Container name")
     run_parser.add_argument("--hostname", "-H", help="Container hostname")
     run_parser.add_argument(
-        "--no-overlay", action="store_true", help="Use chroot instead of OverlayFS"
+        "--no-overlay",
+        action="store_true",
+        help="Use a directly mounted rootfs without OverlayFS",
     )
     run_parser.add_argument(
         "--cpu", "-c", type=int, help="CPU limit percentage (1-100)"
