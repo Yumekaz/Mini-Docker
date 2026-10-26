@@ -39,6 +39,7 @@ from mini_docker.filesystem import (
     mount,
     setup_overlay_filesystem,
     setup_pivot_root,
+    verify_proc_policy,
 )
 from mini_docker.logger import ContainerLogger
 from mini_docker.metadata import (
@@ -767,6 +768,7 @@ class Container:
             setup_pivot_root(
                 rootfs_to_pivot, volumes=config.volumes, rootless=config.rootless
             )
+            verify_proc_policy()
             if not config.interactive:
                 # Open through the new readonly device bind, never retain an
                 # old host-/dev fd whose metadata could bypass that mount.
@@ -1285,6 +1287,7 @@ class Container:
                 os.fchdir(root_fd)
                 os.chroot(".")
                 os.close(root_fd)
+                verify_proc_policy()
                 os.chdir(workdir or config.workdir or "/")
                 if not interactive:
                     private_stdin = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)

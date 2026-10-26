@@ -108,9 +108,10 @@ jobs:
           python - <<'PY'
           import xml.etree.ElementTree as ET
           root=ET.parse('verification/root-results.xml').getroot()
-          assert len(root.findall('.//testcase'))>=15
+          assert len(root.findall('.//testcase'))>=16
           names={case.attrib.get('name') for case in root.findall('.//testcase')}
           required={'test_private_devices_and_nodev_image_volume_and_submount',
+                    'test_readonly_proc_and_private_inert_control_masks',
                     'test_required_mount_failure_never_falls_back_or_execs[private]',
                     'test_required_mount_failure_never_falls_back_or_execs[detach]'}
           assert required <= names, f'missing required isolation cases: {required-names}'

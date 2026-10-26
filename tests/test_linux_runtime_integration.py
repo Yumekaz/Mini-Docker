@@ -11,6 +11,90 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+_PROC_MASK_TARGETS = ("sysrq-trigger", "kcore", "keys", "timer_list")
+
+# Run inside both a freshly started workload and its exec child. Inspect mounts
+# before opening a mask O_RDONLY; never probe kernel controls with write opens.
+_PROC_PROTECTION_INSPECTION = r"""
+import errno, os, re, stat, sys
+
+def unescape(value):
+    return re.sub(r'\\([0-7]{3})', lambda match: chr(int(match[1], 8)), value)
+
+mounts = {}
+with open('/proc/self/mountinfo') as stream:
+    for line in stream:
+        fields = line.split()
+        separator = fields.index('-')
+        target = unescape(fields[4])
+        if target == '/dev' or target == '/proc' or target.startswith('/proc/'):
+            assert target not in mounts, ('stacked protected mount', target)
+        mounts[target] = (unescape(fields[3]), set(fields[5].split(',')),
+                          fields[separator + 1], fields[2])
+
+proc = mounts['/proc']
+assert proc[0] == '/' and proc[2] == 'proc', proc
+assert {'ro', 'nodev', 'nosuid', 'noexec'} <= proc[1], proc
+for target, entry in mounts.items():
+    if target.startswith('/proc/'):
+        assert 'ro' in entry[1], (target, entry)
+if sys.argv[1] != '-':
+    assert os.readlink('/proc/self/ns/mnt') == sys.argv[1], 'exec namespace differs'
+
+dev = mounts['/dev']
+assert dev[2] == 'tmpfs' and 'ro' in dev[1], dev
+source_fd = os.open('/dev/.proc-mask', os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+try:
+    source = os.fstat(source_fd)
+    assert stat.S_ISREG(source.st_mode), source
+    assert stat.S_IMODE(source.st_mode) == 0o444 and source.st_size == 0, source
+    assert os.read(source_fd, 1) == b'', 'mask source is not empty'
+finally:
+    os.close(source_fd)
+
+expected = set(sys.argv[2:])
+targets = {'sysrq-trigger', 'kcore', 'keys', 'timer_list'}
+assert expected <= targets, expected
+for name in sorted(targets):
+    path = '/proc/' + name
+    if name not in expected:
+        try:
+            os.lstat(path)
+        except OSError as error:
+            assert error.errno == errno.ENOENT, (path, error)
+        else:
+            raise AssertionError(('unexpected proc feature', path))
+        assert path not in mounts, ('absent feature has a mount', path)
+        continue
+    entry = mounts[path]
+    assert entry[0] == '/.proc-mask' and entry[2] == 'tmpfs', (path, entry)
+    assert 'ro' in entry[1] and entry[3] == dev[3], (path, entry, dev)
+    # Only after verifying an inert tmpfs mask mount may content be inspected.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(fd)
+        assert stat.S_ISREG(info.st_mode), (path, info)
+        assert stat.S_IMODE(info.st_mode) == 0o444 and info.st_size == 0, (path, info)
+        assert (info.st_dev, info.st_ino) == (source.st_dev, source.st_ino), path
+        assert os.read(fd, 1) == b'', ('mask is not empty', path)
+    finally:
+        os.close(fd)
+print('proc-protection-inspected', flush=True)
+"""
+
+
+def _available_proc_mask_targets():
+    """Require every kernel feature present outside the workload to be masked."""
+    present = []
+    for name in _PROC_MASK_TARGETS:
+        try:
+            os.lstat("/proc/" + name)
+        except FileNotFoundError:
+            continue
+        present.append(name)
+    return present
+
+
 def _require_root():
     if os.geteuid() != 0:
         pytest.skip("runtime integration requires root")
@@ -284,8 +368,9 @@ def test_verified_pidfd_stop_and_exec_use_owned_container(tmp_path):
     _require_root()
     _require_cgroups_v2()
     rootfs = _copy_rootfs(tmp_path)
+    python = _install_python_memory_hog(rootfs)
     script = r"""
-import sys, time
+import os, sys, time
 from mini_docker.container import Container
 from mini_docker.metadata import load_container_config
 from mini_docker.process_identity import capture_identity
@@ -313,6 +398,10 @@ try:
         'value=$(/bin/busybox awk -v key="$key:" \'$1==key{print $2}\' /proc/self/status); '
         'test $((0x$value & 0x08000000)) -eq 0 || exit 43; done; '
         'echo verified-exec'])==0
+    probe, python = sys.argv[2:4]
+    assert manager.exec(config.id, [python, '-S', '-c', probe,
+        os.readlink('/proc/{}/ns/mnt'.format(running.pid)), *sys.argv[4:]],
+        env={'PYTHONHOME': '/usr'}) == 0
     assert manager.stop(config.id,timeout=1)
     assert load_container_config(config.id).status=='stopped'
     print('verified-stop')
@@ -321,10 +410,54 @@ finally:
     if current and current.status=='running':
         manager.stop(config.id,timeout=0)
 """
-    result = _run_root_container(tmp_path, [sys.executable, "-c", script, rootfs])
+    result = _run_root_container(
+        tmp_path,
+        [
+            sys.executable,
+            "-c",
+            script,
+            rootfs,
+            _PROC_PROTECTION_INSPECTION,
+            python,
+            *_available_proc_mask_targets(),
+        ],
+    )
     assert result.returncode == 0, result.stderr
     assert "verified-exec" in result.stdout
+    assert "proc-protection-inspected" in result.stdout
     assert "verified-stop" in result.stdout
+
+
+def test_readonly_proc_and_private_inert_control_masks(tmp_path):
+    """Inspect the real policy without writes or write-open probes to procfs."""
+    _require_root()
+    _require_cgroups_v2()
+    rootfs = _copy_rootfs(tmp_path)
+    python = _install_python_memory_hog(rootfs)
+
+    result = _run_root_container(
+        tmp_path,
+        [
+            sys.executable,
+            "-m",
+            "mini_docker",
+            "run",
+            "--no-overlay",
+            "--env",
+            "PYTHONHOME=/usr",
+            rootfs,
+            "--",
+            python,
+            "-S",
+            "-c",
+            _PROC_PROTECTION_INSPECTION,
+            "-",
+            *_available_proc_mask_targets(),
+        ],
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "proc-protection-inspected" in result.stdout
 
 
 def test_private_devices_and_nodev_image_volume_and_submount(tmp_path):

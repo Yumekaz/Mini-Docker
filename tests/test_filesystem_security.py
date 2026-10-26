@@ -4,8 +4,10 @@ import ast
 import ctypes
 import errno
 import os
+import stat
 import struct
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -58,6 +60,11 @@ def syscalls(monkeypatch):
             return os.readlink(path) if path.startswith("/proc/self/fd/") else path
 
         calls.append((resolve(source), resolve(target), fstype, flags, options))
+        if fstype == "proc":
+            # Fake a kernel-populated procfs only inside the disposable fixture.
+            proc = Path(resolve(target))
+            for name in ("sysrq-trigger", "kcore", "keys", "timer_list"):
+                (proc / name).write_bytes(b"fake kernel control; never a host path")
 
     monkeypatch.setattr(fs, "mount", mock.Mock(side_effect=record))
     monkeypatch.setattr(fs, "set_mount_attributes", mock.Mock())
@@ -77,6 +84,133 @@ def syscalls(monkeypatch):
         ),
     )
     return calls
+
+
+def test_procfs_is_readonly_and_global_controls_have_private_inert_masks(
+    rootfs, syscalls
+):
+    fs.setup_pivot_root(str(rootfs))
+    proc = next(call for call in syscalls if call[2] == "proc")
+    assert (
+        proc[3] & fs.MS_RDONLY
+    ), "PID namespaces do not virtualize global proc controls"
+    mask = rootfs / "dev/.proc-mask"
+    assert mask.is_file() and mask.read_bytes() == b""
+    assert mask.stat().st_mode & 0o777 == 0o444
+    for name in ("sysrq-trigger", "kcore", "keys", "timer_list"):
+        assert any(
+            call[0] == str(mask)
+            and call[1] == str(rootfs / "proc" / name)
+            and call[3] & fs.MS_BIND
+            for call in syscalls
+        )
+
+
+def test_proc_control_mask_mount_failure_aborts_before_pivot(
+    rootfs, syscalls, monkeypatch
+):
+    original = fs.mount.side_effect
+
+    def fail(source, target, fstype=None, flags=0, options=None):
+        if target.startswith("/proc/self/fd/") and os.readlink(target) == str(
+            rootfs / "proc/sysrq-trigger"
+        ):
+            raise fs.FilesystemError("injected proc control mask failure")
+        return original(source, target, fstype, flags, options)
+
+    monkeypatch.setattr(fs, "mount", mock.Mock(side_effect=fail))
+    with pytest.raises(fs.FilesystemError, match="proc control mask failure"):
+        fs.setup_pivot_root(str(rootfs))
+    fs.pivot_root.assert_not_called()
+    fs.chroot.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "valid",
+        "rw-proc",
+        "missing-mask",
+        "rw-submount",
+        "wrong-source",
+        "not-empty",
+        "writable-inode",
+    ],
+)
+def test_exec_proc_guard_rejects_legacy_and_unprotected_mounts(monkeypatch, change):
+    proc_flags = "rw" if change == "rw-proc" else "ro"
+    text = "10 1 0:1 / /proc " + proc_flags + ",nosuid,nodev,noexec - proc proc rw\n"
+    if change != "missing-mask":
+        source = "/wrong" if change == "wrong-source" else "/.proc-mask"
+        text += (
+            "11 10 0:2 "
+            + source
+            + " /proc/sysrq-trigger ro,nodev,nosuid,noexec - tmpfs tmpfs rw\n"
+        )
+    if change == "rw-submount":
+        text += "12 10 0:1 /sys /proc/sys rw - proc proc rw\n"
+    monkeypatch.setattr(fs, "open", mock.mock_open(read_data=text), raising=False)
+
+    def metadata(path):
+        if path != "/proc/sysrq-trigger":
+            raise FileNotFoundError(path)
+        return SimpleNamespace(
+            st_mode=stat.S_IFREG | (0o644 if change == "writable-inode" else 0o444),
+            st_size=1 if change == "not-empty" else 0,
+        )
+
+    monkeypatch.setattr(fs.os, "lstat", metadata)
+    if change == "valid":
+        fs.verify_proc_policy()
+    else:
+        with pytest.raises(fs.FilesystemError):
+            fs.verify_proc_policy()
+
+
+def test_exec_proc_guard_does_not_treat_permission_failure_as_kernel_feature_absence(
+    monkeypatch,
+):
+    text = "10 1 0:1 / /proc ro,nosuid,nodev,noexec - proc proc rw\n"
+    monkeypatch.setattr(fs, "open", mock.mock_open(read_data=text), raising=False)
+    monkeypatch.setattr(
+        fs.os, "lstat", mock.Mock(side_effect=PermissionError("denied"))
+    )
+    with pytest.raises(PermissionError):
+        fs.verify_proc_policy()
+
+
+def test_exec_must_verify_entered_proc_policy_before_running_user_code():
+    # Check the production exec hook's ordering without entering namespaces;
+    # semantic policy failures are exercised above.
+    tree = ast.parse(Path(runtime.__file__).read_text())
+    container = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "Container"
+    )
+    execute = next(
+        node
+        for node in container.body
+        if isinstance(node, ast.FunctionDef) and node.name == "exec"
+    )
+    calls = [node for node in ast.walk(execute) if isinstance(node, ast.Call)]
+    guards = [
+        node.lineno
+        for node in calls
+        if isinstance(node.func, ast.Name) and node.func.id == "verify_proc_policy"
+    ]
+    roots = [
+        node.lineno
+        for node in calls
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "chroot"
+    ]
+    workloads = [
+        node.lineno
+        for node in calls
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "execvp"
+    ]
+    assert len(guards) == len(roots) == len(workloads) == 1
+    assert roots[0] < guards[0] < workloads[0]
 
 
 @pytest.mark.parametrize("path", ["dev", "proc", "sys", ".pivot_old"])

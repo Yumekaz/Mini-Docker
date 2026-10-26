@@ -41,6 +41,32 @@ inode metadata, device creation is forbidden, and pre-existing device nodes in
 images/volumes are disabled recursively. This deliberately excludes creating
 additional devices and mknod-based FIFOs; it is not a hostile-tenant certification.
 
+The entire fresh `/proc` mount is read-only, `nodev,nosuid,noexec`, for both
+initial workloads and exec commands in the same protected mount namespace.
+This intentionally disallows **all procfs tuning writes**, including normally
+per-process settings such as `/proc/self/oom_score_adj` or `/proc/self/comm`;
+applications that require those writes need to be adapted. Process/status and
+mount information remain readable subject to kernel permissions.
+
+When present, `/proc/sysrq-trigger`, `/proc/kcore`, `/proc/keys` and
+`/proc/timer_list` are additionally covered by read-only bind mounts of one
+private, empty regular file (`/dev/.proc-mask`, mode `0444`). The source is
+created on the workload's private `/dev` before it is sealed, never borrowed
+from host `/dev/null`. Only a genuinely absent kernel feature (`ENOENT`) is
+omitted; permission, type, mount or mount-attribute enforcement failures abort
+startup. This requires Linux procfs, tmpfs, private devpts and working bind,
+pivot/detach and `mount_setattr` support on the Linux x86_64 kernel 5.12+ path
+described above; a kernel version alone does not prove those permissions or
+features are available.
+
+Upgrading or restarting the daemon **does not retrofit existing running
+workloads**: they retain their existing mount namespaces. Explicitly restart
+each affected workload under the upgraded daemon to install this proc policy.
+Both start and exec verify the protected proc mounts; exec rejects legacy
+unprotected namespaces, including writable proc submounts, rather than
+modifying them in place. Rejected exec does not stop or protect the already
+running workload.
+
 Safe lifecycle control also requires working Linux pidfd support (exposed by
 Python or libc). Persisted numeric PIDs alone never authorize signals: boot ID
 and process start time must match a pinned process handle. Legacy live metadata
@@ -150,6 +176,11 @@ python -m pytest
 Installing the package also provides the `mini-docker` console command.
 
 CI includes the Python-version test matrix, strict formatting/security checks, and **Root Runtime Validation on pushes and pull requests**, with manual dispatch also available. The privileged workflow runs actual namespace/container cases and rejects prerequisite skips, using guarded disposable state paths.
+
+Root Runtime Validation requires at least **16** privileged cases, explicitly
+including the read-only proc/private inert-mask case. That case and the
+existing root exec case inspect mountinfo, file descriptors, regular-file type
+and empty mask content without kernel-control writes or write-open probes.
 
 The October 8 retained local suite passed **97 tests**, including five real privileged integration cases. DuraFlow separately checked command execution, environment handling and timeout cancellation. See [Cairn's validation record](https://github.com/Yumekaz/Cairn/blob/main/docs/VALIDATION_2026-10.md) for provenance and limits.
 

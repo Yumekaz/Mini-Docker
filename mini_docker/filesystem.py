@@ -54,6 +54,8 @@ MNT_FORCE = 1
 MNT_DETACH = 2
 MNT_EXPIRE = 4
 UMOUNT_NOFOLLOW = 8
+PROC_MASKED_FILES = ("sysrq-trigger", "kcore", "keys", "timer_list")
+PROC_MASK_FILE = ".proc-mask"
 
 
 class FilesystemError(Exception):
@@ -431,7 +433,9 @@ def setup_pivot_root(merged_path: str, volumes=None, rootless: bool = False) -> 
         # explicit device exception. No legacy non-recursive fallback is safe.
         set_mount_attributes(root.fd, MS_NODEV | MS_NOSUID)
         safe = MS_NOSUID | MS_NOEXEC | MS_NODEV
-        _mount_directory(root, "proc", "proc", "proc", safe)
+        # A PID namespace does not virtualize all proc controls. UID 0 can
+        # otherwise reach global SysRq/sysctl handlers despite reduced caps.
+        _mount_directory(root, "proc", "proc", "proc", safe | MS_RDONLY)
         _mount_directory(
             root,
             "sys",
@@ -441,6 +445,7 @@ def setup_pivot_root(merged_path: str, volumes=None, rootless: bool = False) -> 
             "size=64k,mode=0555" if rootless else None,
         )
         _setup_minimal_dev(root)
+        _mask_proc_controls(root)
         for volume in volumes or ():
             bind_volume(root, volume)
 
@@ -504,6 +509,18 @@ def _setup_minimal_dev(root) -> None:
     )
     dev = root.directory("dev")
     try:
+        # Private regular-file masks, never a host device or host-file bind.
+        # The source is sealed with /dev before any workload can run.
+        empty = os.open(
+            PROC_MASK_FILE,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o444,
+            dir_fd=dev,
+        )
+        try:
+            os.fchmod(empty, 0o444)
+        finally:
+            os.close(empty)
         for name, major, minor in (
             ("null", 1, 3),
             ("zero", 1, 5),
@@ -574,3 +591,116 @@ def _setup_minimal_dev(root) -> None:
         set_mount_attributes(dev, MS_RDONLY | MS_NOSUID | MS_NOEXEC, recursive=False)
     finally:
         os.close(dev)
+
+
+def _mask_proc_controls(root) -> None:
+    """Mask global/sensitive proc files with the sealed private empty inode.
+
+    Some kernel configurations omit individual interfaces. Only genuine
+    absence is accepted; permission, type, mount and enforcement errors abort.
+    No kernel-control file is ever opened for writing or written by setup.
+    """
+    dev = root.directory("dev")
+    try:
+        source = os.open(
+            PROC_MASK_FILE, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dev
+        )
+    finally:
+        os.close(dev)
+    try:
+        info = os.fstat(source)
+        if not stat.S_ISREG(info.st_mode) or info.st_size != 0:
+            raise FilesystemError(
+                "proc mask source must be a private empty regular file"
+            )
+        proc = root.directory("proc")
+        try:
+            for name in PROC_MASKED_FILES:
+                try:
+                    target = os.open(
+                        name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=proc
+                    )
+                except FileNotFoundError:
+                    continue  # Kernel feature genuinely absent, not an ignored failure.
+                try:
+                    kind = os.fstat(target).st_mode
+                    if not (stat.S_ISREG(kind) or stat.S_ISCHR(kind)):
+                        raise FilesystemError(
+                            "unexpected proc control target type: " + name
+                        )
+                    mount(_proc_fd(source), _proc_fd(target), None, MS_BIND)
+                finally:
+                    os.close(target)
+                mounted = os.open(
+                    name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=proc
+                )
+                try:
+                    set_mount_attributes(
+                        mounted,
+                        MS_RDONLY | MS_NODEV | MS_NOSUID | MS_NOEXEC,
+                        recursive=False,
+                    )
+                finally:
+                    os.close(mounted)
+        finally:
+            os.close(proc)
+    finally:
+        os.close(source)
+
+
+def verify_proc_policy() -> None:
+    """Inspect the entered workload root before start/exec, never host controls.
+
+    Upgrading the daemon cannot retrofit a running container's mount namespace.
+    Refuse exec into legacy/unprotected namespaces instead of inheriting their
+    kernel-control exposure. Operators must explicitly restart those workloads.
+    """
+    mounts = {}
+    with open("/proc/self/mountinfo", encoding="utf-8") as stream:
+        for line in stream:
+            fields = line.split()
+            if len(fields) < 10 or "-" not in fields:
+                raise FilesystemError("cannot verify workload proc mount policy")
+            separator = fields.index("-")
+            if separator + 1 >= len(fields):
+                raise FilesystemError("cannot verify workload proc mount policy")
+            if fields[4] in mounts and (
+                fields[4] == "/proc" or fields[4].startswith("/proc/")
+            ):
+                raise FilesystemError("ambiguous stacked workload proc mount")
+            mounts[fields[4]] = (
+                fields[3],
+                set(fields[5].split(",")),
+                fields[separator + 1],
+            )
+    proc = mounts.get("/proc")
+    if (
+        not proc
+        or proc[2] != "proc"
+        or not {"ro", "nodev", "nosuid", "noexec"} <= proc[1]
+    ):
+        raise FilesystemError(
+            "read-only procfs required; explicitly restart legacy containers"
+        )
+    if any(
+        "ro" not in attributes[1]
+        for name, attributes in mounts.items()
+        if name.startswith("/proc/")
+    ):
+        raise FilesystemError("writable workload proc submount is forbidden")
+    for name in PROC_MASKED_FILES:
+        target = "/proc/" + name
+        try:
+            info = os.lstat(target)
+        except FileNotFoundError:
+            continue
+        masked = mounts.get(target)
+        if (
+            not masked
+            or masked[0] != "/" + PROC_MASK_FILE
+            or masked[2] != "tmpfs"
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_size != 0
+            or info.st_mode & 0o222
+        ):
+            raise FilesystemError("private read-only proc mask required: " + target)
