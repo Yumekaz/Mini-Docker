@@ -73,6 +73,13 @@ and process start time must match a pinned process handle. Legacy live metadata
 without that identity is reported as `unknown`; inspect it explicitly rather
 than automatically adopting, killing or starting a duplicate workload.
 
+Stop pins the verified mount namespace before signalling a workload and waits
+for its supervisor to exit before finalizing state. This keeps OverlayFS's
+last-mount writeback out of the supervisor's exit path without disabling
+writeback or accepting a still-live metadata writer. The stop timeout controls
+the graceful-signal interval, not a hard upper bound on filesystem cleanup:
+slow or stalled storage can still delay the caller.
+
 Exec pins the verified namespaces and actual process root, waits for proven
 workload setup, and applies the workload's resource/security policies and user
 identity. It does not inherit the daemon's environment or supplementary groups.

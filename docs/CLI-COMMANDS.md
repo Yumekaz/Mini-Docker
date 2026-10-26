@@ -279,6 +279,10 @@ f6e5d4c3b2a1    database    stopped     1 hour ago      /bin/sh
 
 ### stop
 
+The timeout is the graceful interval before SIGKILL, not a total wall-clock
+deadline. Stop verifies workload/supervisor identities and waits for writer
+quiescence; kernel filesystem writeback and resource cleanup can take longer.
+
 Stop a running container.
 
 ```bash
