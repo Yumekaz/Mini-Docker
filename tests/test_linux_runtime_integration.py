@@ -16,6 +16,7 @@ _PROC_MASK_TARGETS = ("sysrq-trigger", "kcore", "keys", "timer_list")
 # Run inside both a freshly started workload and its exec child. Inspect mounts
 # before opening a mask O_RDONLY; never probe kernel controls with write opens.
 _PROC_PROTECTION_INSPECTION = r"""
+print('proc-probe-entered', flush=True)
 import errno, os, re, stat, sys
 
 def unescape(value):
@@ -370,14 +371,22 @@ def test_verified_pidfd_stop_and_exec_use_owned_container(tmp_path):
     rootfs = _copy_rootfs(tmp_path)
     python = _install_python_memory_hog(rootfs)
     script = r"""
-import os, sys, time
+import os, signal, sys, time, traceback
 from mini_docker.container import Container
 from mini_docker.metadata import load_container_config
-from mini_docker.process_identity import capture_identity
+from mini_docker.process_identity import VerifiedProcess, capture_identity
 manager=Container()
 config=manager.create(sys.argv[1], ['/bin/sleep','30'], detach=True)
+stage='start'
+primary_failure=False
+shell_status=probe_status=stop_result=None
+def mark(event, **values):
+    print('rootexec-stage ' + event + ' ' + repr(values), flush=True)
+mark('start.begin', python=sys.version, pid=os.getpid(), container=config.id)
 try:
     manager.start(config.id, attach=False)
+    mark('start.exit')
+    stage='readiness'
     deadline=time.monotonic()+5
     while time.monotonic()<deadline:
         running=load_container_config(config.id)
@@ -387,7 +396,45 @@ try:
     assert running.status=='running'
     assert running.pid_identity==capture_identity(running.pid)
     assert running.supervisor_identity==capture_identity(running.supervisor_pid)
-    assert manager.exec(config.id,['/bin/sh','-c',
+    mark('readiness.exit', workload=running.pid, supervisor=running.supervisor_pid)
+    # An interrupted benign sleep must resume under the unchanged real filter.
+    # Observe it blocked in sleep, not merely alive while SIGSYS core handling
+    # is pending. /proc may report the original or restarted native sleep call.
+    with VerifiedProcess(running.pid, running.pid_identity) as workload:
+        def wait_state(expected):
+            limit=time.monotonic()+1
+            state=syscall=None
+            while time.monotonic()<limit:
+                assert workload.alive(), ('benign sleep exited', stage)
+                with open('/proc/{}/stat'.format(running.pid)) as stream:
+                    state=stream.read().rsplit(') ',1)[1].split()[0]
+                if state==expected:
+                    if expected=='S':
+                        with open('/proc/{}/syscall'.format(running.pid)) as stream:
+                            syscall=stream.read().split()[0]
+                        if syscall not in {'35','219','230'}:
+                            time.sleep(.02)
+                            continue
+                    mark(stage+'.observed', state=state, syscall=syscall)
+                    return
+                time.sleep(.02)
+            raise AssertionError(('sleep state deadline', stage, expected, state, syscall))
+        stage='sleep-before-stop'
+        wait_state('S')
+        stage='sleep-sigstop'
+        mark(stage+'.begin')
+        workload.send(signal.SIGSTOP)
+        wait_state('T')
+        stage='sleep-sigcont'
+        mark(stage+'.begin')
+        workload.send(signal.SIGCONT)
+        wait_state('S')
+        assert workload.alive()
+        assert running.pid_identity==capture_identity(running.pid)
+        mark(stage+'.exit', alive=True)
+    stage='shell-exec'
+    mark(stage+'.begin', expected_denial='mknodat')
+    assert (shell_status := manager.exec(config.id,['/bin/sh','-c',
         'set -e; test $$ -gt 1; '
         '/bin/busybox grep -q "^Seccomp:[[:space:]]*2$" /proc/self/status; '
         '/bin/busybox grep -q "^NoNewPrivs:[[:space:]]*1$" /proc/self/status; '
@@ -397,18 +444,43 @@ try:
         'for key in CapEff CapPrm CapBnd; do '
         'value=$(/bin/busybox awk -v key="$key:" \'$1==key{print $2}\' /proc/self/status); '
         'test $((0x$value & 0x08000000)) -eq 0 || exit 43; done; '
-        'echo verified-exec'])==0
+        'echo verified-exec']))==0
+    mark(stage+'.exit', status=shell_status)
+    stage='python-proc-probe'
     probe, python = sys.argv[2:4]
-    assert manager.exec(config.id, [python, '-S', '-c', probe,
+    mark(stage+'.begin', executable=python)
+    assert (probe_status := manager.exec(config.id, [python, '-S', '-c', probe,
         os.readlink('/proc/{}/ns/mnt'.format(running.pid)), *sys.argv[4:]],
-        env={'PYTHONHOME': '/usr'}) == 0
-    assert manager.stop(config.id,timeout=1)
+        env={'PYTHONHOME': '/usr'})) == 0
+    mark(stage+'.exit', status=probe_status)
+    stage='stop'
+    mark(stage+'.begin', timeout=1, workload=running.pid, supervisor=running.supervisor_pid)
+    assert (stop_result := manager.stop(config.id,timeout=1))
+    mark(stage+'.exit', result=stop_result)
     assert load_container_config(config.id).status=='stopped'
     print('verified-stop')
+except BaseException:
+    primary_failure=True
+    print('rootexec-original-failure ' + repr(dict(stage=stage,
+        shell_status=shell_status, probe_status=probe_status, stop_result=stop_result)),
+        file=sys.stderr, flush=True)
+    traceback.print_exc(file=sys.stderr)
+    raise
 finally:
-    current=load_container_config(config.id)
-    if current and current.status=='running':
-        manager.stop(config.id,timeout=0)
+    try:
+        mark('cleanup.begin', primary_failure=primary_failure)
+        current=load_container_config(config.id)
+        if current and current.status=='running':
+            mark('cleanup-stop.begin', timeout=0)
+            cleanup_result=manager.stop(config.id,timeout=0)
+            mark('cleanup-stop.exit', result=cleanup_result)
+        mark('cleanup.exit')
+    except BaseException:
+        print('rootexec-cleanup-failure primary_failure=' + str(primary_failure),
+            file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        if not primary_failure:
+            raise
 """
     result = _run_root_container(
         tmp_path,
@@ -422,7 +494,9 @@ finally:
             *_available_proc_mask_targets(),
         ],
     )
-    assert result.returncode == 0, result.stderr
+    print(result.stdout, end="")
+    print(result.stderr, end="", file=sys.stderr)
+    assert result.returncode == 0, result.stdout + result.stderr
     assert "verified-exec" in result.stdout
     assert "proc-protection-inspected" in result.stdout
     assert "verified-stop" in result.stdout
@@ -469,14 +543,20 @@ def test_private_devices_and_nodev_image_volume_and_submount(tmp_path):
     source.mkdir()
     script = r'''
 import os, stat, subprocess, sys
-from mini_docker.filesystem import mount, MS_BIND
+from mini_docker.filesystem import mount, MS_BIND, MS_NOSUID, MS_NOEXEC
 rootfs, volume = sys.argv[1:]
 # These mutations and mounts occur only under the disposable outer namespace.
 def metadata(info):
     return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid)
 real_null = os.open('/dev/null', os.O_PATH | os.O_CLOEXEC)
 real_before = metadata(os.fstat(real_null))
-fixture_null = os.path.join(os.path.dirname(volume), 'controller-null')
+fixture_dev = os.path.join(os.path.dirname(volume), 'controller-dev')
+os.mkdir(fixture_dev)
+# Host pytest directories may be nodev (for example /tmp on hardened hosts).
+# Only this tiny private fixture mount permits its harmless null device; never
+# relax /tmp or the real host /dev. The outer namespace unmounts it on exit.
+mount('tmpfs', fixture_dev, 'tmpfs', MS_NOSUID | MS_NOEXEC, 'size=1m,mode=0700')
+fixture_null = os.path.join(fixture_dev, 'null')
 os.mknod(fixture_null, stat.S_IFCHR | 0o666, os.makedev(1, 3))
 fixture_before = metadata(os.stat(fixture_null))
 # Even a regression can touch only this disposable inode, never real host null.

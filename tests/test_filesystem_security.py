@@ -14,6 +14,7 @@ import pytest
 
 from mini_docker import container as runtime
 from mini_docker import filesystem as fs
+from mini_docker import seccomp as syscall_policy
 from mini_docker.capabilities import CAP_MKNOD, DEFAULT_CONTAINER_CAPS
 from mini_docker.metadata import ContainerConfig
 from mini_docker.seccomp import (
@@ -596,6 +597,32 @@ def test_default_seccomp_removes_both_device_creation_syscalls(monkeypatch):
         mock.call("mknodat"),
     ]
     policy.apply.assert_called_once_with()
+
+
+def test_whitelist_permits_kernel_wait_restart_without_allowing_privileged_calls():
+    assert syscall_policy.SYSCALLS.get("restart_syscall") == 219
+    assert "restart_syscall" in ALLOWED_SYSCALLS_WHITELIST
+    program = syscall_policy.build_whitelist_filter(ALLOWED_SYSCALLS_WHITELIST)
+    instructions = list(struct.iter_unpack("HBBI", program))
+
+    def evaluate(number, arch=0xC000003E):
+        pc, value = 0, 0
+        while True:
+            code, yes, no, constant = instructions[pc]
+            if code == 0x20:
+                value = arch if constant == 4 else number
+            elif code == 0x15:
+                pc += yes if value == constant else no
+            elif code == 0x06:
+                return constant
+            else:
+                pytest.fail("unknown whitelist BPF instruction")
+            pc += 1
+
+    assert evaluate(219) == syscall_policy.SECCOMP_RET_ALLOW
+    for number in (101, 133, 165, 169, 259, 272, 308, 321, 0x40000000 | 219, 999999):
+        assert evaluate(number) == syscall_policy.SECCOMP_RET_KILL_PROCESS
+    assert evaluate(219, arch=0x40000003) == syscall_policy.SECCOMP_RET_KILL_PROCESS
 
 
 def test_mandatory_device_bpf_denies_mknod_mknodat_x32_and_wrong_abi(monkeypatch):

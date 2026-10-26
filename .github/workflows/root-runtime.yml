@@ -48,7 +48,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y busybox-static iproute2 iptables
+          sudo apt-get install -y busybox-static iproute2 iptables strace
           mkdir -p rootfs/{bin,dev,proc,sys,tmp,etc}
           cp /usr/bin/busybox rootfs/bin/busybox
           for applet in sh echo cat sleep dd mkdir rmdir sync httpd printf; do ln -sf busybox "rootfs/bin/$applet"; done
@@ -94,17 +94,29 @@ jobs:
           command -v chroot
           command -v ip
           command -v iptables
+          command -v strace
+          command -v timeout
           test -e /proc/self/ns/mnt
           test -e /sys/fs/cgroup/cgroup.controllers
 
       - name: Complete privileged runtime suite without prerequisite skips
+        id: required_suite
         run: |
           set -euo pipefail
-          mkdir -p verification
+          mkdir -p verification/source-before
+          git rev-parse HEAD > verification/revision.txt
+          python --version 2>&1 | tee verification/python-version.txt
+          uname -a > verification/kernel-version.txt
+          cp --parents tests/test_linux_runtime_integration.py .github/workflows/root-runtime.yml \
+            mini_docker/container.py mini_docker/filesystem.py \
+            mini_docker/process_identity.py mini_docker/seccomp.py verification/source-before/
+          sha256sum tests/test_linux_runtime_integration.py .github/workflows/root-runtime.yml \
+            mini_docker/container.py mini_docker/filesystem.py \
+            mini_docker/process_identity.py mini_docker/seccomp.py > verification/source-before.sha256
           sudo --non-interactive env PYTHONPATH="$GITHUB_WORKSPACE" \
             "$PYTHON_BIN" -m pytest -q -p no:cacheprovider \
             --junitxml="$GITHUB_WORKSPACE/verification/root-results.xml" \
-            tests/test_linux_runtime_integration.py
+            tests/test_linux_runtime_integration.py 2>&1 | tee verification/root-suite.log
           python - <<'PY'
           import xml.etree.ElementTree as ET
           root=ET.parse('verification/root-results.xml').getroot()
@@ -118,6 +130,44 @@ jobs:
           assert any(case.attrib.get('name')=='test_verified_pidfd_stop_and_exec_use_owned_container' for case in root.findall('.//testcase'))
           assert not root.findall('.//skipped'), 'required privileged runtime cases were skipped'
           PY
+
+      - name: Diagnose rootexec only after required suite failure (not an acceptance rerun)
+        if: ${{ failure() && steps.required_suite.outcome == 'failure' }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          # Never reuse the original suite's pytest/state paths or /var runtime.
+          test "$STATE_BASE" = /tmp/mini-docker-root-runtime
+          diagnostic_state_base="$(sudo --non-interactive mktemp -d "$STATE_BASE/rootexec-diagnostic.XXXXXX")"
+          case "$diagnostic_state_base" in
+            "$STATE_BASE"/rootexec-diagnostic.*) ;;
+            *) echo '::error::Unsafe diagnostic state path'; exit 1 ;;
+          esac
+          sudo --non-interactive chmod 700 "$diagnostic_state_base"
+          diagnostic_logs="$GITHUB_WORKSPACE/verification/rootexec-diagnostic"
+          mkdir -p "$diagnostic_logs"
+          printf '%s\n' "$diagnostic_state_base" > "$diagnostic_logs/state-base.txt"
+          # The test's 30s subprocess and existing stop deadlines are unchanged.
+          # This extra 60s whole-command bound covers tracing/setup overhead.
+          if sudo --non-interactive timeout --signal=TERM --kill-after=5s 60s \
+            strace -ff -tt -T -s 256 -yy -o "$diagnostic_logs/syscalls" \
+            env STATE_BASE="$diagnostic_state_base" \
+              MINI_DOCKER_ROOT="$diagnostic_state_base/root" \
+              MINI_DOCKER_RUN="$diagnostic_state_base/run" \
+              PYTHONPATH="$GITHUB_WORKSPACE" \
+              "$PYTHON_BIN" -m pytest -q -s -p no:cacheprovider \
+              --basetemp="$diagnostic_state_base/pytest" \
+              --junitxml="$diagnostic_logs/rootexec-results.xml" \
+              tests/test_linux_runtime_integration.py::test_verified_pidfd_stop_and_exec_use_owned_container \
+            2>&1 | tee "$diagnostic_logs/rootexec.log"; then
+            diagnostic_status=0
+          else
+            diagnostic_status=$?
+          fi
+          printf '%s\n' "$diagnostic_status" > "$diagnostic_logs/exit-status.txt"
+          sudo --non-interactive chown -R "$(id -u):$(id -g)" "$diagnostic_logs"
+          # Only diagnostic status: required_suite has already failed the job.
+          exit "$diagnostic_status"
 
       - name: Run root host doctor
         run: |
@@ -310,3 +360,27 @@ jobs:
           sudo umount -R "$SMOKE_ROOTFS/sys" 2>/dev/null || true
           sudo umount -R "$SMOKE_ROOTFS/proc" 2>/dev/null || true
           sudo rm -rf -- "$STATE_BASE"
+
+      - name: Retain final tested-source checkpoint
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p verification/source-after
+          cp --parents tests/test_linux_runtime_integration.py .github/workflows/root-runtime.yml \
+            mini_docker/container.py mini_docker/filesystem.py \
+            mini_docker/process_identity.py mini_docker/seccomp.py verification/source-after/
+          sha256sum tests/test_linux_runtime_integration.py .github/workflows/root-runtime.yml \
+            mini_docker/container.py mini_docker/filesystem.py \
+            mini_docker/process_identity.py mini_docker/seccomp.py > verification/source-after.sha256
+          sudo --non-interactive chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE/verification"
+
+      - name: Upload runtime verification logs, XML and source checkpoints
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: root-runtime-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: verification/
+          retention-days: 14
+          if-no-files-found: warn
+          # Only the curated verification tree; includes its .github source copy.
+          include-hidden-files: true

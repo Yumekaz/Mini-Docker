@@ -306,6 +306,7 @@ SYSCALLS = {
     "epoll_create": 213,
     "getdents64": 217,
     "set_tid_address": 218,
+    "restart_syscall": 219,
     "timer_create": 222,
     "timer_settime": 223,
     "timer_gettime": 224,
@@ -498,6 +499,9 @@ ALLOWED_SYSCALLS_WHITELIST = {
     "rt_sigaction",
     "rt_sigprocmask",
     "rt_sigreturn",
+    # The kernel resumes interrupted nanosleep/poll/futex waits through this
+    # no-argument restart block; otherwise ordinary signal delivery kills them.
+    "restart_syscall",
     "rt_sigpending",
     "rt_sigtimedwait",
     "rt_sigsuspend",
