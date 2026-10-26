@@ -461,8 +461,6 @@ ALLOWED_SYSCALLS_WHITELIST = {
     "fchownat",
     "lchown",
     "creat",
-    "mknod",
-    "mknodat",
     # === DIRECTORY ===
     "getdents",
     "getdents64",
@@ -668,6 +666,10 @@ ALLOWED_SYSCALLS_WHITELIST = {
 
 # Attempting these results in immediate process termination
 ABSOLUTELY_FORBIDDEN_SYSCALLS = {
+    # The private device allowlist cannot be expanded by workloads, including
+    # children that create their own user namespace or request a custom policy.
+    "mknod",
+    "mknodat",
     # === PROCESS TRACING (Container Escape) ===
     "ptrace",  # Debug/trace processes - major escape vector
     "process_vm_readv",  # Read another process's memory

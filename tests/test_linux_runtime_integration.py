@@ -284,7 +284,7 @@ def test_verified_pidfd_stop_and_exec_use_owned_container(tmp_path):
     _require_root()
     _require_cgroups_v2()
     rootfs = _copy_rootfs(tmp_path)
-    script = """
+    script = r"""
 import sys, time
 from mini_docker.container import Container
 from mini_docker.metadata import load_container_config
@@ -303,9 +303,15 @@ try:
     assert running.pid_identity==capture_identity(running.pid)
     assert running.supervisor_identity==capture_identity(running.supervisor_pid)
     assert manager.exec(config.id,['/bin/sh','-c',
-        'test $$ -gt 1 && '
-        '/bin/busybox grep -q "^Seccomp:[[:space:]]*2$" /proc/self/status && '
-        '/bin/busybox grep -q "^NoNewPrivs:[[:space:]]*1$" /proc/self/status && '
+        'set -e; test $$ -gt 1; '
+        '/bin/busybox grep -q "^Seccomp:[[:space:]]*2$" /proc/self/status; '
+        '/bin/busybox grep -q "^NoNewPrivs:[[:space:]]*1$" /proc/self/status; '
+        'test ! -e /dev/console; '
+        'if /bin/busybox mknod /dev/exec-forbidden b 7 0; then exit 41; fi; '
+        'test ! -e /dev/exec-forbidden || exit 42; '
+        'for key in CapEff CapPrm CapBnd; do '
+        'value=$(/bin/busybox awk -v key="$key:" \'$1==key{print $2}\' /proc/self/status); '
+        'test $((0x$value & 0x08000000)) -eq 0 || exit 43; done; '
         'echo verified-exec'])==0
     assert manager.stop(config.id,timeout=1)
     assert load_container_config(config.id).status=='stopped'
@@ -319,3 +325,149 @@ finally:
     assert result.returncode == 0, result.stderr
     assert "verified-exec" in result.stdout
     assert "verified-stop" in result.stdout
+
+
+def test_private_devices_and_nodev_image_volume_and_submount(tmp_path):
+    """Real mounts; only harmless /dev/null fixture nodes, never raw disks."""
+    _require_root()
+    _require_cgroups_v2()
+    rootfs = _copy_rootfs(tmp_path)
+    source = tmp_path / "devices-volume"
+    source.mkdir()
+    script = r'''
+import os, stat, subprocess, sys
+from mini_docker.filesystem import mount, MS_BIND
+rootfs, volume = sys.argv[1:]
+# These mutations and mounts occur only under the disposable outer namespace.
+def metadata(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid)
+real_null = os.open('/dev/null', os.O_PATH | os.O_CLOEXEC)
+real_before = metadata(os.fstat(real_null))
+fixture_null = os.path.join(os.path.dirname(volume), 'controller-null')
+os.mknod(fixture_null, stat.S_IFCHR | 0o666, os.makedev(1, 3))
+fixture_before = metadata(os.stat(fixture_null))
+# Even a regression can touch only this disposable inode, never real host null.
+mount(fixture_null, '/dev/null', None, MS_BIND)
+for path in (rootfs + '/image-null', volume + '/volume-null'):
+    os.mknod(path, stat.S_IFCHR | 0o666, os.makedev(1, 3))
+os.mkdir(volume + '/nested')
+mount(volume, volume + '/nested', None, MS_BIND)
+shell = r"""
+set -e
+test -c /dev/null
+test -c /dev/zero
+test -d /dev/pts
+test -d /dev/shm
+test "$(/bin/busybox stat -c %a /dev/shm)" = '1777'
+echo private-shared-memory > /dev/shm/proof
+test "$(/bin/busybox cat /dev/shm/proof)" = 'private-shared-memory'
+test "$(/bin/busybox readlink /dev/ptmx)" = 'pts/ptmx'
+test ! -e /dev/console
+test ! -e /dev/disk
+test ! -e /.pivot_old
+echo harmless > /dev/null
+if /bin/busybox chmod 000 /dev/null; then exit 53; fi
+if /bin/busybox chown 12345:12345 /dev/null; then exit 54; fi
+test -c /proc/self/fd/0
+if /bin/busybox chmod 000 /proc/self/fd/0; then exit 55; fi
+for path in /image-null /data/volume-null /data/nested/volume-null; do
+    test -c "$path"
+    if /bin/busybox cat "$path" >/dev/null 2>/dev/null; then exit 51; fi
+done
+if /bin/busybox mknod /dev/blocked b 7 0; then exit 52; fi
+test ! -e /dev/blocked
+for key in CapEff CapPrm CapBnd; do
+    value=$(/bin/busybox awk -v key="$key:" '$1==key{print $2}' /proc/self/status)
+    test $((0x$value & 0x08000000)) -eq 0
+done
+echo devices-confined
+"""
+result = subprocess.run([sys.executable, '-m', 'mini_docker', 'run', '--no-overlay',
+    '--volume', volume + ':/data:rw', rootfs, '--', '/bin/sh', '-c', shell],
+    input='', text=True, capture_output=True, timeout=20)
+assert metadata(os.stat(fixture_null)) == fixture_before, 'fixture device metadata changed'
+assert metadata(os.fstat(real_null)) == real_before, 'real host device metadata changed'
+os.close(real_null)
+print(result.stdout, end='')
+print(result.stderr, end='', file=sys.stderr)
+assert result.returncode == 0, result.returncode
+print('host-device-metadata-unchanged')
+'''
+    result = _run_root_container(
+        tmp_path, [sys.executable, "-c", script, rootfs, str(source)]
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "devices-confined" in result.stdout
+    assert "host-device-metadata-unchanged" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "unsafe", ["dev", "proc", "sys", ".pivot_old", "volume-dotdot", "volume-symlink"]
+)
+def test_unsafe_staging_fails_without_touching_outside(tmp_path, unsafe):
+    _require_root()
+    _require_cgroups_v2()
+    rootfs = _copy_rootfs(tmp_path)
+    outside, source = tmp_path / "outside", tmp_path / "source"
+    outside.mkdir()
+    source.mkdir()
+    args = [sys.executable, "-m", "mini_docker", "run", "--no-overlay"]
+    if unsafe.startswith("volume-"):
+        target = "/../outside/created"
+        if unsafe == "volume-symlink":
+            os.symlink(outside, os.path.join(rootfs, "app"), target_is_directory=True)
+            target = "/app/created"
+        args += ["--volume", f"{source}:{target}:rw"]
+    else:
+        staging = os.path.join(rootfs, unsafe)
+        if os.path.exists(staging):
+            os.rmdir(staging)
+        os.symlink(outside, staging, target_is_directory=True)
+    args += [rootfs, "--", "/bin/sh", "-c", "echo unsafe-workload-executed"]
+    result = _run_root_container(tmp_path, args)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "unsafe-workload-executed" not in result.stdout
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("failure", ["private", "detach"])
+def test_required_mount_failure_never_falls_back_or_execs(tmp_path, failure):
+    _require_root()
+    _require_cgroups_v2()
+    rootfs = _copy_rootfs(tmp_path)
+    script = r"""
+import sys, time
+from mini_docker import container as runtime, filesystem as fs
+from mini_docker.metadata import load_container_config
+def deny(*args, **kwargs):
+    raise fs.FilesystemError('injected required mount failure')
+def forbidden_fallback(*args):
+    print('BAD-CHROOT-FALLBACK', flush=True)
+    raise AssertionError('no chroot fallback allowed')
+if sys.argv[2] == 'private':
+    runtime.mount = deny
+else:
+    fs.umount = deny
+fs.chroot = forbidden_fallback
+manager = runtime.Container()
+config = manager.create(sys.argv[1], ['/bin/sh', '-c', 'echo UNSAFE-WORKLOAD-EXECUTED'],
+                        use_overlay=False, detach=True)
+manager.start(config.id, attach=True)
+deadline = time.monotonic() + 8
+while time.monotonic() < deadline:
+    state = load_container_config(config.id)
+    if state.status == 'stopped':
+        break
+    time.sleep(.02)
+assert state.status == 'stopped', state
+assert not state.exec_ready
+assert state.exit_code != 0, state
+print('aborted-before-exec')
+"""
+    result = _run_root_container(
+        tmp_path, [sys.executable, "-c", script, rootfs, failure]
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "aborted-before-exec" in result.stdout
+    assert "BAD-CHROOT-FALLBACK" not in result.stdout
+    assert "UNSAFE-WORKLOAD-EXECUTED" not in result.stdout

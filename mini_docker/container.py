@@ -14,27 +14,29 @@ Container Lifecycle:
     create → start → running → stop → stopped → remove
 """
 
+import ctypes
 import errno
 import json
 import os
 import signal
+import struct
 import sys
 import time
 from dataclasses import asdict
 from typing import Dict, List, Optional
 
-from mini_docker.capabilities import Capabilities
+from mini_docker.capabilities import (
+    CAP_MKNOD,
+    Capabilities,
+    get_capabilities,
+    set_capabilities,
+)
 from mini_docker.cgroups import Cgroup, delete_cgroup
 from mini_docker.filesystem import (
-    MS_BIND,
     MS_PRIVATE,
-    MS_RDONLY,
     MS_REC,
-    MS_REMOUNT,
     cleanup_overlay,
     mount,
-    setup_chroot_filesystem,
-    setup_minimal_dev,
     setup_overlay_filesystem,
     setup_pivot_root,
 )
@@ -60,8 +62,8 @@ from mini_docker.process_identity import (
     VerifiedProcess,
     capture_identity,
 )
-from mini_docker.seccomp import Seccomp
-from mini_docker.utils import check_root, ensure_directories, get_overlay_paths
+from mini_docker.seccomp import Seccomp, install_seccomp_filter, set_no_new_privs
+from mini_docker.utils import check_root, ensure_directories, get_overlay_paths, libc
 
 
 class ContainerError(Exception):
@@ -82,6 +84,39 @@ class ContainerInvalidRequestError(ContainerError):
 
 class ContainerInternalError(ContainerError):
     """Raised when an unexpected internal runtime failure occurs."""
+
+
+def _drop_device_capability():
+    """Also remove MKNOD from bounding/inheritable sets: exec cannot restore it."""
+    # PR_CAPBSET_READ=23, PR_CAPBSET_DROP=24; applies in the current user ns.
+    present = libc.prctl(23, CAP_MKNOD, 0, 0, 0)
+    if present < 0 or (present and libc.prctl(24, CAP_MKNOD, 0, 0, 0) != 0):
+        raise ContainerInternalError(
+            f"Cannot drop CAP_MKNOD bounding capability: errno {ctypes.get_errno()}"
+        )
+    current = get_capabilities()
+    set_capabilities(**{key: caps - {CAP_MKNOD} for key, caps in current.items()})
+
+
+def _install_device_creation_filter():
+    """Mandatory small x86_64 filter even when the full policy is disabled.
+
+    Prevents creating devices in new user namespaces as well as /dev. Unknown
+    ABIs fail closed; x32's syscall-number bit must not bypass native numbers.
+    Installed only after setup, so trusted runtime device binds are unaffected.
+    """
+    instructions = (
+        (0x20, 0, 0, 4),  # load seccomp_data.arch
+        (0x15, 1, 0, 0xC000003E),  # AUDIT_ARCH_X86_64
+        (0x06, 0, 0, 0x80000000),  # KILL_PROCESS for other ABIs
+        (0x20, 0, 0, 0),  # load syscall number
+        (0x45, 3, 0, 0x40000000),  # reject all x32 calls
+        (0x15, 2, 0, 133),  # mknod
+        (0x15, 1, 0, 259),  # mknodat
+        (0x06, 0, 0, 0x7FFF0000),  # ALLOW others
+        (0x06, 0, 0, 0x00050000 | errno.EPERM),
+    )
+    install_seccomp_filter(b"".join(struct.pack("HBBI", *row) for row in instructions))
 
 
 def _close_inherited_descriptors(keep_fds):
@@ -680,9 +715,6 @@ class Container:
         """Prepare the container root, security policy, stdio, and exec."""
         devnull_fd = None
         try:
-            if not attach and not config.interactive:
-                devnull_fd = os.open(os.devnull, os.O_RDONLY)
-
             # Set up filesystem
             rootfs_to_pivot = config.rootfs
 
@@ -704,7 +736,9 @@ class Container:
             try:
                 mount("", "/", None, MS_REC | MS_PRIVATE, None)
             except Exception as e:
-                logger.write(f"Warning: Failed to make mounts private: {e}\n")
+                raise ContainerInternalError(
+                    f"Failed to make mounts private; refusing filesystem setup: {e}"
+                ) from e
 
             if config.use_overlay:
                 try:
@@ -721,54 +755,22 @@ class Container:
                         raise ContainerInternalError(
                             f"OverlayFS setup failed: {e}"
                         ) from e
-                    logger.write(f"Overlayfs setup failed ({e}); using chroot\n")
+                    logger.write(
+                        f"Overlayfs unavailable ({e}); using mandatory private bind-root\n"
+                    )
                     config.use_overlay = False
                     rootfs_to_pivot = config.rootfs
 
-            # Set up minimal /dev
-            try:
-                setup_minimal_dev(rootfs_to_pivot)
-            except Exception:
-                pass
-
-            # Mount custom volumes. Fail closed: a broken bind must not
-            # silently start the container without a declared volume, and a
-            # failed read-only remount must not leave an ro volume writable.
-            for vol in config.volumes:
-                host_path = vol.get("host")
-                container_path = vol.get("container")
-                mode = vol.get("mode", "rw")
-                if not host_path or not container_path:
-                    continue
-                rel_container_path = container_path.lstrip("/")
-                target_path = os.path.join(rootfs_to_pivot, rel_container_path)
-                os.makedirs(target_path, exist_ok=True)
-                try:
-                    logger.write(
-                        f"Mounting volume: {host_path} -> {target_path} ({mode})\n"
-                    )
-                    mount(host_path, target_path, None, MS_BIND | MS_REC)
-                    if mode == "ro":
-                        # Two-step remount: RDONLY is not reliably applied when
-                        # combined with MS_BIND in the original bind call.
-                        mount(
-                            host_path,
-                            target_path,
-                            None,
-                            MS_BIND | MS_REC | MS_REMOUNT | MS_RDONLY,
-                        )
-                except Exception as e:
-                    raise ContainerInternalError(
-                        f"Failed to mount volume {host_path} -> "
-                        f"{container_path} (mode={mode}): {e}"
-                    ) from e
-
-            # Use pivot_root for better isolation, fallback to chroot
-            try:
-                setup_pivot_root(rootfs_to_pivot)
-            except Exception as e:
-                # Fallback to chroot
-                setup_chroot_filesystem(rootfs_to_pivot)
+            # One mandatory path validates/pins staging and volume destinations,
+            # creates private /dev, then pivots AND detaches. Never catch its
+            # post-pivot errors with a generic chroot fallback.
+            setup_pivot_root(
+                rootfs_to_pivot, volumes=config.volumes, rootless=config.rootless
+            )
+            if not config.interactive:
+                # Open through the new readonly device bind, never retain an
+                # old host-/dev fd whose metadata could bypass that mount.
+                devnull_fd = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
 
             # Change to working directory
             try:
@@ -807,10 +809,10 @@ class Container:
                     os.dup2(detached_log_fd, sys.stderr.fileno())
                     os.close(detached_log_fd)
 
-                if not config.interactive:
-                    os.dup2(devnull_fd, sys.stdin.fileno())
-                    os.close(devnull_fd)
-                    devnull_fd = None
+            if not config.interactive:
+                os.dup2(devnull_fd, sys.stdin.fileno())
+                os.close(devnull_fd)
+                devnull_fd = None
 
             self._exec_workload(config)
 
@@ -868,25 +870,28 @@ class Container:
     def _apply_capabilities(
         self, config: ContainerConfig, logger: ContainerLogger
     ) -> None:
-        """Apply Linux capability policy, failing closed in root mode."""
-        if config.rootless:
-            return
-
+        """Apply capability policy, including irreversible device restrictions."""
         try:
-            caps = Capabilities()
-            caps.apply()
+            if not config.rootless:
+                caps = Capabilities()
+                caps.remove("MKNOD")
+                caps.apply()
+            _drop_device_capability()
         except Exception as e:
             logger.write(f"Capability setup failed: {e}\n")
             raise ContainerInternalError(f"Capability setup failed: {e}") from e
 
     def _apply_seccomp(self, config: ContainerConfig, logger: ContainerLogger) -> None:
-        """Apply seccomp policy when enabled, failing closed on filter errors."""
-        if not config.seccomp_enabled:
-            return
-
+        """Device-creation denial is mandatory; full whitelist stays the default."""
         try:
-            seccomp = Seccomp()
-            seccomp.apply()
+            set_no_new_privs()
+            if config.seccomp_enabled:
+                seccomp = Seccomp()
+                seccomp.remove_allowed("mknod")
+                seccomp.remove_allowed("mknodat")
+                seccomp.apply()
+            else:
+                _install_device_creation_filter()
         except Exception as e:
             logger.write(f"Seccomp setup failed: {e}\n")
             raise ContainerInternalError(f"Seccomp setup failed: {e}") from e
@@ -1281,6 +1286,12 @@ class Container:
                 os.chroot(".")
                 os.close(root_fd)
                 os.chdir(workdir or config.workdir or "/")
+                if not interactive:
+                    private_stdin = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
+                    try:
+                        os.dup2(private_stdin, sys.stdin.fileno())
+                    finally:
+                        os.close(private_stdin)
 
                 # Set up environment
                 os.environ.clear()

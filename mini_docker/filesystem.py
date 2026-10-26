@@ -2,9 +2,9 @@
 """
 Filesystem Isolation for Mini-Docker.
 
-Implements two isolation methods:
-1. chroot-based: Simple filesystem root change
-2. OverlayFS: Copy-on-write layered filesystem
+Mandatory pivot_root isolation, optionally backed by OverlayFS.
+Requires Linux mount_setattr (5.12+) and a usable host /proc/self/fd during
+setup. No mount, device, or old-root failure downgrades to a weaker isolation.
 
 OverlayFS Layout:
     lower/  → Read-only base image (from rootfs)
@@ -21,8 +21,9 @@ System Calls Used:
 
 import ctypes
 import os
+import platform
 import shutil
-import subprocess
+import stat
 from typing import Optional, Tuple
 
 from mini_docker.utils import get_overlay_paths, libc
@@ -59,6 +60,172 @@ class FilesystemError(Exception):
     """Exception raised for filesystem operations."""
 
     pass
+
+
+def _components(path: str, absolute: bool = False):
+    if not isinstance(path, str) or "\0" in path or ".." in path.split("/"):
+        raise FilesystemError("unsafe filesystem path (NUL or '..')")
+    if absolute and not path.startswith("/"):
+        raise FilesystemError("filesystem path must be absolute")
+    return [part for part in path.split("/") if part not in ("", ".")]
+
+
+def _walk_directory(start_fd: int, parts, create: bool = False) -> int:
+    """Walk relative to pinned directory handles, never following symlinks."""
+    current = os.dup(start_fd)
+    try:
+        for part in parts:
+            if create:
+                try:
+                    os.mkdir(part, 0o755, dir_fd=current)
+                except FileExistsError:
+                    pass
+            following = os.open(
+                part,
+                os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=current,
+            )
+            os.close(current)
+            current = following
+        return current
+    except BaseException:
+        os.close(current)
+        raise
+
+
+class PinnedRoot:
+    """A no-follow root and parent anchor; all staging uses relative dirfds.
+
+    The controller must own/freeze its image and runtime-state directories
+    during setup. Bind sources remain privileged, trusted-controller inputs.
+    Unlike realpath checks, later ancestor symlink replacement cannot redirect
+    operations performed through these already-open directory handles.
+    """
+
+    def __init__(self, path: str):
+        parts = _components(path, absolute=True)
+        if not parts:
+            raise FilesystemError("refusing the host root as a container root")
+        self.fd = None
+        self.parent_fd = None
+        self.name = parts[-1]
+        anchor = os.open("/", os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            self.parent_fd = _walk_directory(anchor, parts[:-1])
+            self.fd = self.directory(self.name, parent_fd=self.parent_fd)
+        except BaseException:
+            self.close()
+            raise
+        finally:
+            os.close(anchor)
+
+    def directory(self, path: str, create: bool = False, parent_fd=None) -> int:
+        return _walk_directory(
+            self.fd if parent_fd is None else parent_fd,
+            _components(path),
+            create,
+        )
+
+    def reopen(self, expected_fd=None):
+        """After a mount, acquire its NEW vfsmount, not the covered old fd."""
+        following = self.directory(self.name, parent_fd=self.parent_fd)
+        # Self-binds retain the old root identity; a lower-layer bind must
+        # instead expose the specifically pinned source image's identity.
+        before = os.fstat(self.fd if expected_fd is None else expected_fd)
+        after = os.fstat(following)
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            os.close(following)
+            raise FilesystemError("container root changed during bind mount")
+        os.close(self.fd)
+        self.fd = following
+
+    def close(self):
+        for attribute in ("fd", "parent_fd"):
+            descriptor = getattr(self, attribute)
+            if descriptor is not None:
+                os.close(descriptor)
+                setattr(self, attribute, None)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+def _proc_fd(fd: int) -> str:
+    return f"/proc/self/fd/{fd}"
+
+
+def set_mount_attributes(fd: int, flags: int, recursive: bool = True) -> None:
+    """Enforce nodev/nosuid and recursive ro, including nested bind mounts.
+
+    Legacy MS_BIND|MS_REMOUNT|MS_REC does not recursively protect submounts.
+    Linux 5.12+ mount_setattr is required; ENOSYS/EPERM are fatal, not warnings.
+    The supported syscall ABI matches the existing x86_64 seccomp/pivot policy.
+    """
+    if platform.machine() != "x86_64":
+        raise FilesystemError("secure mount setup currently requires Linux x86_64")
+
+    class MountAttr(ctypes.Structure):
+        _fields_ = [
+            (name, ctypes.c_uint64)
+            for name in ("attr_set", "attr_clr", "propagation", "userns_fd")
+        ]
+
+    attributes = MountAttr(flags, 0, 0, 0)
+    # __NR_mount_setattr=442; AT_EMPTY_PATH=0x1000; AT_RECURSIVE=0x8000.
+    result = libc.syscall(
+        442,
+        fd,
+        ctypes.c_char_p(b""),
+        0x1000 | (0x8000 if recursive else 0),
+        ctypes.byref(attributes),
+        ctypes.sizeof(attributes),
+    )
+    if result != 0:
+        raise FilesystemError(
+            "mount_setattr enforcement failed (Linux 5.12+ and mount "
+            f"permissions required): errno {ctypes.get_errno()}"
+        )
+
+
+def _mount_directory(root, path, source, fstype, flags, options=None):
+    target = root.directory(path, create=True)
+    try:
+        mount(source, _proc_fd(target), fstype, flags, options)
+    finally:
+        os.close(target)
+
+
+def validate_volume(volume):
+    host, target, mode = (volume.get(key) for key in ("host", "container", "mode"))
+    mode = "rw" if mode is None else mode
+    _components(host, absolute=True)
+    parts = _components(target, absolute=True)
+    if not parts or parts[0] in ("dev", "proc", "sys", ".pivot_old"):
+        raise FilesystemError("volume target overlaps a protected runtime mount")
+    if mode not in ("rw", "ro"):
+        raise FilesystemError("volume mode must be exactly 'rw' or 'ro'")
+    return host, "/".join(parts), mode
+
+
+def bind_volume(root, volume):
+    host, target, mode = validate_volume(volume)
+    with PinnedRoot(host) as source:
+        destination = root.directory(target, create=True)
+        try:
+            mount(_proc_fd(source.fd), _proc_fd(destination), None, MS_BIND | MS_REC)
+        finally:
+            os.close(destination)
+        # Reopen through the pinned root to get the newly mounted tree.
+        mounted = root.directory(target)
+        try:
+            set_mount_attributes(
+                mounted, MS_NODEV | MS_NOSUID | (MS_RDONLY if mode == "ro" else 0)
+            )
+        finally:
+            os.close(mounted)
 
 
 def mount(
@@ -190,61 +357,8 @@ def pivot_root(new_root: str, put_old: str) -> int:
 
 
 def setup_chroot_filesystem(rootfs_path: str) -> None:
-    """
-    Set up filesystem isolation using chroot.
-
-    This is the simpler isolation method. It:
-    1. Mounts essential filesystems (proc, sys, dev)
-    2. Changes root to the container rootfs
-    3. Changes to root directory
-
-    Args:
-        rootfs_path: Path to container root filesystem
-    """
-    # Ensure rootfs exists
-    if not os.path.isdir(rootfs_path):
-        raise FilesystemError(f"Rootfs not found: {rootfs_path}")
-
-    # Mount proc filesystem
-    proc_path = os.path.join(rootfs_path, "proc")
-    os.makedirs(proc_path, exist_ok=True)
-    try:
-        mount("proc", proc_path, "proc", MS_NOSUID | MS_NOEXEC | MS_NODEV)
-    except FilesystemError:
-        pass  # Might already be mounted
-
-    # Mount sys filesystem
-    sys_path = os.path.join(rootfs_path, "sys")
-    os.makedirs(sys_path, exist_ok=True)
-    try:
-        mount("sysfs", sys_path, "sysfs", MS_NOSUID | MS_NOEXEC | MS_NODEV)
-    except FilesystemError:
-        pass
-
-    # Mount dev filesystem (or bind mount from host)
-    dev_path = os.path.join(rootfs_path, "dev")
-    os.makedirs(dev_path, exist_ok=True)
-    try:
-        # Use devtmpfs for /dev
-        mount("devtmpfs", dev_path, "devtmpfs", MS_NOSUID)
-    except FilesystemError:
-        try:
-            # Fallback: bind mount /dev
-            mount("/dev", dev_path, None, MS_BIND | MS_REC)
-        except FilesystemError:
-            pass
-
-    # Create /dev/pts
-    pts_path = os.path.join(rootfs_path, "dev", "pts")
-    os.makedirs(pts_path, exist_ok=True)
-    try:
-        mount("devpts", pts_path, "devpts", MS_NOSUID | MS_NOEXEC)
-    except FilesystemError:
-        pass
-
-    # Change root
-    chroot(rootfs_path)
-    os.chdir("/")
+    """Compatibility entry point; isolation may no longer downgrade to chroot."""
+    setup_pivot_root(rootfs_path)
 
 
 def setup_overlay_filesystem(
@@ -274,93 +388,68 @@ def setup_overlay_filesystem(
     os.makedirs(work, exist_ok=True)
     os.makedirs(merged, exist_ok=True)
 
-    # Copy rootfs to lower layer (or bind mount for efficiency)
-    if not os.listdir(lower):
-        # Bind mount the rootfs as lower layer (read-only)
-        try:
-            mount(rootfs_path, lower, None, MS_BIND | MS_RDONLY)
-        except FilesystemError:
-            # Fallback: copy the rootfs
-            shutil.copytree(rootfs_path, lower, dirs_exist_ok=True)
-
-    # Mount overlay filesystem
-    overlay_options = f"lowerdir={lower}," f"upperdir={upper}," f"workdir={work}"
-
-    mount("overlay", merged, "overlay", 0, overlay_options)
+    # Pin all paths. Do not copy through image symlinks if a bind is denied.
+    with PinnedRoot(rootfs_path) as source, PinnedRoot(lower) as base, PinnedRoot(
+        upper
+    ) as changes, PinnedRoot(work) as scratch, PinnedRoot(merged) as target:
+        mount(_proc_fd(source.fd), _proc_fd(base.fd), None, MS_BIND)
+        base.reopen(source.fd)
+        set_mount_attributes(base.fd, MS_RDONLY | MS_NODEV | MS_NOSUID)
+        overlay_options = (
+            f"lowerdir={_proc_fd(base.fd)},upperdir={_proc_fd(changes.fd)},"
+            f"workdir={_proc_fd(scratch.fd)}"
+        )
+        mount(
+            "overlay",
+            _proc_fd(target.fd),
+            "overlay",
+            MS_NODEV | MS_NOSUID,
+            overlay_options,
+        )
 
     return lower, upper, work, merged
 
 
-def setup_pivot_root(merged_path: str) -> None:
+def setup_pivot_root(merged_path: str, volumes=None, rootless: bool = False) -> None:
+    """Stage through pinned no-follow handles; pivot and detach or abort.
+
+    Rootless uses a read-only empty /sys instead of borrowing host sysfs. It
+    still requires user/PID/mount namespaces, private tmpfs/devpts/proc mounts,
+    per-device binds, pivot_root and recursive mount_setattr permissions.
     """
-    Use pivot_root for more secure filesystem isolation.
+    with PinnedRoot(merged_path) as root:
+        # Reject unsafe image staging paths BEFORE the first mount/device work.
+        for path in ("dev", "proc", "sys", ".pivot_old"):
+            os.close(root.directory(path, create=True))
+        for volume in volumes or ():
+            _, path, _ = validate_volume(volume)
+            os.close(root.directory(path, create=True))
 
-    This is more secure than chroot because:
-    1. It completely replaces the root filesystem
-    2. The old root can be unmounted entirely
-    3. It's harder to escape than chroot
+        mount(_proc_fd(root.fd), _proc_fd(root.fd), None, MS_BIND | MS_REC)
+        root.reopen()
+        # Covers preexisting image nodes and ALL nested mounts, before /dev's
+        # explicit device exception. No legacy non-recursive fallback is safe.
+        set_mount_attributes(root.fd, MS_NODEV | MS_NOSUID)
+        safe = MS_NOSUID | MS_NOEXEC | MS_NODEV
+        _mount_directory(root, "proc", "proc", "proc", safe)
+        _mount_directory(
+            root,
+            "sys",
+            "tmpfs" if rootless else "sysfs",
+            "tmpfs" if rootless else "sysfs",
+            safe | MS_RDONLY,
+            "size=64k,mode=0555" if rootless else None,
+        )
+        _setup_minimal_dev(root)
+        for volume in volumes or ():
+            bind_volume(root, volume)
 
-    Args:
-        merged_path: Path to the new root (e.g., OverlayFS merged dir)
-    """
-    # Mount essential filesystems in the new root
-    proc_path = os.path.join(merged_path, "proc")
-    sys_path = os.path.join(merged_path, "sys")
-    dev_path = os.path.join(merged_path, "dev")
-
-    os.makedirs(proc_path, exist_ok=True)
-    os.makedirs(sys_path, exist_ok=True)
-    os.makedirs(dev_path, exist_ok=True)
-
-    try:
-        mount("proc", proc_path, "proc", MS_NOSUID | MS_NOEXEC | MS_NODEV)
-    except FilesystemError:
-        pass
-
-    try:
-        mount("sysfs", sys_path, "sysfs", MS_NOSUID | MS_NOEXEC | MS_NODEV)
-    except FilesystemError:
-        pass
-
-    try:
-        mount("devtmpfs", dev_path, "devtmpfs", MS_NOSUID)
-    except FilesystemError:
-        try:
-            mount("/dev", dev_path, None, MS_BIND | MS_REC)
-        except FilesystemError:
-            pass
-
-    # Make new_root a mount point (required for pivot_root, recursively bind mount to carry sub-mounts)
-    try:
-        mount(merged_path, merged_path, None, MS_BIND | MS_REC)
-    except FilesystemError:
-        pass
-
-    # Create put_old directory
-    put_old = os.path.join(merged_path, ".pivot_old")
-    os.makedirs(put_old, exist_ok=True)
-
-    # Change to new root
-    os.chdir(merged_path)
-
-    # Perform pivot_root
-    try:
+        os.fchdir(root.fd)
         pivot_root(".", ".pivot_old")
-    except FilesystemError:
-        # Fallback to chroot if pivot_root fails
-        chroot(merged_path)
         os.chdir("/")
-        return
-
-    # Change to new root
-    os.chdir("/")
-
-    # Unmount and remove old root
-    try:
-        umount("/.pivot_old", MNT_DETACH)
+        # Nothing catches a post-pivot failure or tries chroot afterwards.
+        umount("/.pivot_old", MNT_DETACH | UMOUNT_NOFOLLOW)
         os.rmdir("/.pivot_old")
-    except (FilesystemError, OSError):
-        pass
 
 
 def cleanup_overlay(container_id: str) -> None:
@@ -398,46 +487,90 @@ def cleanup_overlay(container_id: str) -> None:
 
 
 def setup_minimal_dev(rootfs_path: str) -> None:
-    """
-    Create minimal /dev entries for the container.
+    """Public helper with the same mandatory no-follow/private-device policy."""
+    with PinnedRoot(rootfs_path) as root:
+        _setup_minimal_dev(root)
 
-    Args:
-        rootfs_path: Path to container root filesystem
-    """
-    dev_path = os.path.join(rootfs_path, "dev")
-    os.makedirs(dev_path, exist_ok=True)
 
-    # Create essential device nodes
-    devices = [
-        ("null", 1, 3, 0o666),
-        ("zero", 1, 5, 0o666),
-        ("random", 1, 8, 0o666),
-        ("urandom", 1, 9, 0o666),
-        ("tty", 5, 0, 0o666),
-        ("console", 5, 1, 0o620),
-    ]
-
-    for name, major, minor, mode in devices:
-        path = os.path.join(dev_path, name)
-        if not os.path.exists(path):
+def _setup_minimal_dev(root) -> None:
+    # No devtmpfs, host /dev subtree, host console, or host ptmx/pts is imported.
+    _mount_directory(
+        root,
+        "dev",
+        "tmpfs",
+        "tmpfs",
+        MS_NOSUID | MS_NOEXEC,
+        "mode=0755,size=1m,nr_inodes=1024",
+    )
+    dev = root.directory("dev")
+    try:
+        for name, major, minor in (
+            ("null", 1, 3),
+            ("zero", 1, 5),
+            ("random", 1, 8),
+            ("urandom", 1, 9),
+            ("tty", 5, 0),
+        ):
+            source = os.open(f"/dev/{name}", os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
             try:
-                # mknod for character device
-                os.mknod(path, mode | 0o020000, os.makedev(major, minor))
-            except (OSError, PermissionError):
-                pass
-
-    # Create symlinks
-    symlinks = [
-        ("fd", "/proc/self/fd"),
-        ("stdin", "/proc/self/fd/0"),
-        ("stdout", "/proc/self/fd/1"),
-        ("stderr", "/proc/self/fd/2"),
-    ]
-
-    for name, target in symlinks:
-        path = os.path.join(dev_path, name)
-        if not os.path.exists(path):
-            try:
-                os.symlink(target, path)
-            except OSError:
-                pass
+                info = os.fstat(source)
+                if not stat.S_ISCHR(info.st_mode) or info.st_rdev != os.makedev(
+                    major, minor
+                ):
+                    raise FilesystemError(
+                        f"host /dev/{name} is not the allowlisted device"
+                    )
+                target = os.open(
+                    name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    0o600,
+                    dir_fd=dev,
+                )
+                try:
+                    mount(_proc_fd(source), _proc_fd(target), None, MS_BIND)
+                finally:
+                    os.close(target)
+                # A bind references the host inode: forbid chmod/chown through
+                # this mount while preserving normal character-device I/O.
+                mounted = os.open(
+                    name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dev
+                )
+                try:
+                    set_mount_attributes(
+                        mounted, MS_RDONLY | MS_NOSUID | MS_NOEXEC, recursive=False
+                    )
+                finally:
+                    os.close(mounted)
+            finally:
+                os.close(source)
+        _mount_directory(
+            root,
+            "dev/pts",
+            "devpts",
+            "devpts",
+            MS_NOSUID | MS_NOEXEC,
+            "newinstance,ptmxmode=0666,mode=0620",
+        )
+        # POSIX shared memory stays private, writable and bounded; never
+        # inherit the host's /dev/shm when sealing the parent /dev mount.
+        _mount_directory(
+            root,
+            "dev/shm",
+            "tmpfs",
+            "tmpfs",
+            MS_NOSUID | MS_NOEXEC | MS_NODEV,
+            "mode=1777,size=64m,nr_inodes=4096",
+        )
+        for name, target in (
+            ("ptmx", "pts/ptmx"),
+            ("fd", "/proc/self/fd"),
+            ("stdin", "/proc/self/fd/0"),
+            ("stdout", "/proc/self/fd/1"),
+            ("stderr", "/proc/self/fd/2"),
+        ):
+            os.symlink(target, name, dir_fd=dev)
+        # Seal only the private tmpfs itself. The newinstance devpts child must
+        # remain writable for PTY allocation; it never contains host PTYs.
+        set_mount_attributes(dev, MS_RDONLY | MS_NOSUID | MS_NOEXEC, recursive=False)
+    finally:
+        os.close(dev)

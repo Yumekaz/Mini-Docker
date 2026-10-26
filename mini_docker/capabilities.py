@@ -123,7 +123,7 @@ CAPABILITIES = {
 # Reverse mapping
 CAP_NUMBERS = {v: k for k, v in CAPABILITIES.items()}
 
-# Default capabilities to keep for containers (Docker's default set)
+# Conservative container defaults: device creation is deliberately excluded.
 DEFAULT_CONTAINER_CAPS = {
     CAP_CHOWN,
     CAP_DAC_OVERRIDE,
@@ -135,7 +135,6 @@ DEFAULT_CONTAINER_CAPS = {
     CAP_SETPCAP,
     CAP_NET_BIND_SERVICE,
     CAP_SYS_CHROOT,
-    CAP_MKNOD,
     CAP_AUDIT_WRITE,
     CAP_SETFCAP,
 }

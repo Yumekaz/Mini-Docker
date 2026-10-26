@@ -108,7 +108,12 @@ jobs:
           python - <<'PY'
           import xml.etree.ElementTree as ET
           root=ET.parse('verification/root-results.xml').getroot()
-          assert len(root.findall('.//testcase'))>=6
+          assert len(root.findall('.//testcase'))>=15
+          names={case.attrib.get('name') for case in root.findall('.//testcase')}
+          required={'test_private_devices_and_nodev_image_volume_and_submount',
+                    'test_required_mount_failure_never_falls_back_or_execs[private]',
+                    'test_required_mount_failure_never_falls_back_or_execs[detach]'}
+          assert required <= names, f'missing required isolation cases: {required-names}'
           assert any(case.attrib.get('name')=='test_verified_pidfd_stop_and_exec_use_owned_container' for case in root.findall('.//testcase'))
           assert not root.findall('.//skipped'), 'required privileged runtime cases were skipped'
           PY

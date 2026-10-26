@@ -49,6 +49,9 @@ def test_cgroup_setup_skips_rootless(monkeypatch):
 
 def test_capability_setup_fails_closed(monkeypatch):
     class BrokenCapabilities:
+        def remove(self, capability):
+            assert capability == "MKNOD"
+
         def apply(self):
             raise RuntimeError("capset failed")
 
@@ -66,10 +69,14 @@ def test_capability_setup_fails_closed(monkeypatch):
 
 def test_seccomp_setup_fails_closed(monkeypatch):
     class BrokenSeccomp:
+        def remove_allowed(self, syscall):
+            assert syscall in ("mknod", "mknodat")
+
         def apply(self):
             raise RuntimeError("filter failed")
 
     monkeypatch.setattr("mini_docker.container.Seccomp", BrokenSeccomp)
+    monkeypatch.setattr("mini_docker.container.set_no_new_privs", mock.Mock())
 
     manager = Container.__new__(Container)
     config = ContainerConfig(rootfs="/rootfs", command=["/bin/sh"])
@@ -81,9 +88,14 @@ def test_seccomp_setup_fails_closed(monkeypatch):
     assert any("Seccomp setup failed" in message for message in logger.messages)
 
 
-def test_seccomp_setup_respects_disabled_policy(monkeypatch):
+def test_disabling_full_seccomp_cannot_disable_device_policy(monkeypatch):
     seccomp = mock.Mock()
     monkeypatch.setattr("mini_docker.container.Seccomp", seccomp)
+    devices, no_new_privs = mock.Mock(), mock.Mock()
+    monkeypatch.setattr(
+        "mini_docker.container._install_device_creation_filter", devices
+    )
+    monkeypatch.setattr("mini_docker.container.set_no_new_privs", no_new_privs)
 
     manager = Container.__new__(Container)
     config = ContainerConfig(
@@ -95,6 +107,8 @@ def test_seccomp_setup_respects_disabled_policy(monkeypatch):
     manager._apply_seccomp(config, DummyLogger())
 
     seccomp.assert_not_called()
+    devices.assert_called_once_with()
+    no_new_privs.assert_called_once_with()
 
 
 def test_wait_status_exit_code_mapping_for_normal_exit():

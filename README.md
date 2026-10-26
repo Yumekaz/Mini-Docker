@@ -17,7 +17,7 @@ It is the runtime foundation for [Cairn](https://github.com/Yumekaz/Cairn), with
 | Lifecycle | Create, start, stop, restart, remove, inspect, exec and logs |
 | Isolation | PID, UTS, mount, IPC, network, user and cgroup namespaces |
 | Resources | cgroups v2 CPU, memory and PID limits |
-| Filesystem | OverlayFS copy-on-write with chroot fallback |
+| Filesystem | OverlayFS or private bind root; mandatory pivot and old-root detach |
 | Networking | Bridge/veth setup, NAT and host port publishing |
 | Security mechanisms | seccomp-BPF filtering, capability reduction and NO_NEW_PRIVS |
 | Integration | Unix-domain-socket HTTP API |
@@ -28,6 +28,18 @@ These mechanisms are implemented, but their availability and enforcement depend 
 ## Quick start
 
 Requirements: Linux, Python **3.8+**, and root for the full runtime path. Full networking uses `ip` and `iptables`; filesystem/runtime checks also use host tools such as `mount` and `chroot`. A kernel with the needed namespaces, cgroups v2 and filesystem support is required.
+
+The current secure syscall policy supports Linux **x86_64 with kernel 5.12+**
+(`mount_setattr`). Mount privatization, recursive `nodev,nosuid`, pivot and
+old-root removal are mandatory: unavailable enforcement fails startup, never
+falls back to weaker isolation. Image/volume source and destination components
+must be nonsymlink directories controlled by the administrator during setup.
+
+Containers receive a private, sealed `/dev` with five allowlisted character
+devices, private devpts and bounded private `/dev/shm`. Device binds protect host
+inode metadata, device creation is forbidden, and pre-existing device nodes in
+images/volumes are disabled recursively. This deliberately excludes creating
+additional devices and mknod-based FIFOs; it is not a hostile-tenant certification.
 
 Safe lifecycle control also requires working Linux pidfd support (exposed by
 Python or libc). Persisted numeric PIDs alone never authorize signals: boot ID
@@ -119,7 +131,12 @@ python3 -m mini_docker run --rootless ./rootfs /bin/echo rootless
 scripts/runtime-smoke.sh --rootless
 ```
 
-Rootless execution uses user namespaces. Bridge networking, strict cgroup enforcement and OverlayFS may need additional host support or privilege. A successful root-mode proof is not evidence for every rootless host.
+Rootless execution uses user namespaces and the same mandatory mount/device,
+pivot and filtering boundaries; `/sys` is an empty private read-only tmpfs.
+Overlay unavailability may use a private bind root, never a chroot downgrade.
+Bridge networking and strict cgroup enforcement need additional host support.
+Denied user namespaces or mount enforcement fail closed. A successful root-mode
+proof is not evidence for every rootless host.
 
 ## Development and verification
 
