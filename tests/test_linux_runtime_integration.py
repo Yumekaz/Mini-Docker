@@ -382,6 +382,37 @@ primary_failure=False
 shell_status=probe_status=stop_result=None
 def mark(event, **values):
     print('rootexec-stage ' + event + ' ' + repr(values), flush=True)
+def supervisor_snapshot():
+    # Fixed, read-only capture before cleanup; never trust a bare numeric PID.
+    candidate=locals_config=globals().get('running', config)
+    pid=candidate.supervisor_pid
+    identity=candidate.supervisor_identity
+    try:
+        with VerifiedProcess(pid, identity) as supervisor:
+            for name in ('status', 'wchan', 'stack', 'schedstat'):
+                try:
+                    if not supervisor.alive() or capture_identity(pid)!=identity:
+                        mark('supervisor-snapshot.unavailable', pid=pid, reason='exited or identity changed')
+                        return
+                    with open('/proc/{}/{}'.format(pid,name),
+                              encoding='utf-8', errors='replace') as stream:
+                        data=stream.read(4097)
+                    if not supervisor.alive() or capture_identity(pid)!=identity:
+                        mark('supervisor-snapshot.unavailable', pid=pid, reason='identity lost during read')
+                        return
+                    truncated=len(data)>4096
+                    data=data[:4096]
+                    if name=='status':
+                        data='\n'.join(line for line in data.splitlines()
+                            if line.startswith(('State:', 'TracerPid:', 'Threads:')))
+                    mark('supervisor-snapshot.'+name, pid=pid,
+                         data=data, truncated=truncated)
+                except Exception as error:
+                    mark('supervisor-snapshot.'+name+'.error', pid=pid,
+                         error=type(error).__name__+': '+str(error))
+    except Exception as error:
+        mark('supervisor-snapshot.identity-error', pid=pid,
+             error=type(error).__name__+': '+str(error))
 mark('start.begin', python=sys.version, pid=os.getpid(), container=config.id)
 try:
     manager.start(config.id, attach=False)
@@ -470,6 +501,16 @@ except BaseException:
         shell_status=shell_status, probe_status=probe_status, stop_result=stop_result)),
         file=sys.stderr, flush=True)
     traceback.print_exc(file=sys.stderr)
+    try:
+        supervisor_snapshot()
+    except BaseException as diagnostic_error:
+        # A diagnostic, including an unexpected reporter error, cannot replace
+        # the original exception or change the unchanged cleanup deadlines.
+        try:
+            print('rootexec-supervisor-snapshot-error '+repr(diagnostic_error),
+                  file=sys.stderr, flush=True)
+        except BaseException:
+            pass
     raise
 finally:
     try:

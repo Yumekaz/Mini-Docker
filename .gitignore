@@ -108,3 +108,6 @@ rootfs/
 
 # OCI sample bundle rootfs is generated locally (see docs/CLI-COMMANDS.md)
 oci-bundle/rootfs/
+
+# Local validation evidence is retained on disk, never implicitly source proof.
+/validation-runs/

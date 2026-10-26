@@ -103,6 +103,7 @@ jobs:
         id: required_suite
         run: |
           set -euo pipefail
+          test "$STATE_BASE" = /tmp/mini-docker-root-runtime
           mkdir -p verification/source-before
           git rev-parse HEAD > verification/revision.txt
           python --version 2>&1 | tee verification/python-version.txt
@@ -115,6 +116,7 @@ jobs:
             mini_docker/process_identity.py mini_docker/seccomp.py > verification/source-before.sha256
           sudo --non-interactive env PYTHONPATH="$GITHUB_WORKSPACE" \
             "$PYTHON_BIN" -m pytest -q -p no:cacheprovider \
+            --basetemp="$STATE_BASE/required-suite-pytest" \
             --junitxml="$GITHUB_WORKSPACE/verification/root-results.xml" \
             tests/test_linux_runtime_integration.py 2>&1 | tee verification/root-suite.log
           python - <<'PY'
@@ -131,8 +133,60 @@ jobs:
           assert not root.findall('.//skipped'), 'required privileged runtime cases were skipped'
           PY
 
-      - name: Diagnose rootexec only after required suite failure (not an acceptance rerun)
-        if: ${{ failure() && steps.required_suite.outcome == 'failure' }}
+      - name: Ten untraced rootexec repetitions after the required suite
+        id: rootexec_repetitions
+        if: ${{ success() && steps.required_suite.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          test "$STATE_BASE" = /tmp/mini-docker-root-runtime
+          repetition_state_base="$(sudo --non-interactive mktemp -d "$STATE_BASE/rootexec-untraced.XXXXXX")"
+          case "$repetition_state_base" in
+            "$STATE_BASE"/rootexec-untraced.*) ;;
+            *) echo '::error::Unsafe repetition state path'; exit 1 ;;
+          esac
+          sudo --non-interactive chmod 700 "$repetition_state_base"
+          repetition_logs="$GITHUB_WORKSPACE/verification/rootexec-untraced"
+          mkdir -p "$repetition_logs"
+          printf '%s\n' "$repetition_state_base" > "$repetition_logs/state-base.txt"
+          for ((attempt=1; attempt<=10; attempt++)); do
+            printf -v attempt_id '%02d' "$attempt"
+            attempt_state="$repetition_state_base/pytest-$attempt_id"
+            case "$attempt_state" in
+              "$repetition_state_base"/pytest-[0-9][0-9]) ;;
+              *) echo '::error::Unsafe repetition pytest path'; exit 1 ;;
+            esac
+            if sudo --non-interactive timeout --signal=TERM --kill-after=5s 60s \
+              env STATE_BASE="$repetition_state_base" \
+                MINI_DOCKER_ROOT="$attempt_state/state" MINI_DOCKER_RUN="$attempt_state/run" \
+                PYTHONPATH="$GITHUB_WORKSPACE" \
+                "$PYTHON_BIN" -m pytest -q -s -p no:cacheprovider \
+                --basetemp="$attempt_state" \
+                --junitxml="$repetition_logs/attempt-$attempt_id.xml" \
+                tests/test_linux_runtime_integration.py::test_verified_pidfd_stop_and_exec_use_owned_container \
+              2>&1 | tee "$repetition_logs/attempt-$attempt_id.log"; then
+              attempt_status=0
+            else
+              attempt_status=$?
+            fi
+            printf '%s\n' "$attempt_status" > "$repetition_logs/attempt-$attempt_id.status"
+            if [ "$attempt_status" -ne 0 ]; then
+              # Preserve the first failed state/log/XML. Never retry it green.
+              exit "$attempt_status"
+            fi
+            python - "$repetition_logs/attempt-$attempt_id.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          cases = root.findall('.//testcase')
+          assert len(cases) == 1 and cases[0].get('name') == 'test_verified_pidfd_stop_and_exec_use_owned_container'
+          assert not root.findall('.//skipped') and not root.findall('.//failure') and not root.findall('.//error')
+          PY
+            # At most one successful attempt's copied Python/rootfs is retained.
+            sudo --non-interactive rm -rf -- "$attempt_state"
+          done
+
+      - name: Diagnose rootexec only after suite or repetition failure (not acceptance)
+        if: ${{ failure() && (steps.required_suite.outcome == 'failure' || steps.rootexec_repetitions.outcome == 'failure') }}
         continue-on-error: true
         run: |
           set -euo pipefail
