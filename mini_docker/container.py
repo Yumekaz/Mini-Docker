@@ -22,6 +22,7 @@ import signal
 import struct
 import sys
 import time
+from contextlib import ExitStack
 from dataclasses import asdict
 from typing import Dict, List, Optional
 
@@ -235,6 +236,40 @@ def _try_reap_process(pid: int) -> Optional[int]:
     if reaped_pid == 0:
         return None
     return _exit_code_from_wait_status(status)
+
+
+def _pin_stop_mount_namespace(process, pid, identity):
+    """Keep last-mount writeback out of a verified supervisor's exit path.
+
+    A pidfd proves writer exit, not a bound on OverlayFS's filesystem-wide
+    writeback during namespace destruction. Hold a CLOEXEC namespace reference
+    before signalling the workload, then release it only after the writer fence.
+    No namespace is entered and normal writeback is never disabled.
+    """
+    if not process.alive():
+        return None
+    try:
+        descriptor = os.open(f"/proc/{pid}/ns/mnt", os.O_RDONLY | os.O_CLOEXEC)
+    except FileNotFoundError:
+        # A process already in exit may have dropped nsproxy before pidfd
+        # readiness. It still has to pass the unchanged writer-exit fence.
+        return None
+    try:
+        if capture_identity(pid) != identity:
+            raise ProcessIdentityError(
+                "namespace owner identity changed; no signal sent"
+            )
+        return descriptor
+    except ProcessLookupError:
+        os.close(descriptor)
+        if process.alive():
+            raise ProcessIdentityError(
+                "namespace owner identity unavailable; no signal sent"
+            )
+        return None
+    except BaseException:
+        os.close(descriptor)
+        raise
 
 
 class Container:
@@ -1053,45 +1088,70 @@ class Container:
             )
         if config.status != "running":
             raise ContainerInvalidStateError(f"Container not running: {container_id}")
-        if not config.pid:
-            return self._finalize_stopped_container(container_id, config)
         try:
-            with VerifiedProcess(config.pid, config.pid_identity) as process:
-                if not process.alive():
-                    return self._finalize_stopped_container(container_id, config)
-                process.send(signal.SIGTERM)
-                deadline = time.monotonic() + max(timeout, 0)
-                while process.alive() and time.monotonic() < deadline:
-                    time.sleep(0.1)
-                exit_code = None
-                if process.alive():
-                    process.send(signal.SIGKILL)
-                    exit_code = 128 + signal.SIGKILL
-                    kill_deadline = time.monotonic() + 2.0
-                    while process.alive() and time.monotonic() < kill_deadline:
-                        time.sleep(0.02)
-                    if process.alive():
-                        raise ContainerInternalError(
-                            "Verified workload did not exit after SIGKILL"
-                        )
-                # The supervisor can still publish metadata after its workload
-                # exits. Quiesce that writer before permitting another start.
+            with ExitStack() as scope:
+                supervisor = None
                 if config.supervisor_pid and config.supervisor_pid != config.pid:
                     try:
-                        with VerifiedProcess(
-                            config.supervisor_pid, config.supervisor_identity
-                        ) as supervisor:
-                            deadline = time.monotonic() + 2.0
-                            while supervisor.alive() and time.monotonic() < deadline:
-                                time.sleep(0.02)
-                            if supervisor.alive():
-                                raise ContainerInternalError(
-                                    "Verified supervisor has not finished stopping"
-                                )
+                        supervisor = scope.enter_context(
+                            VerifiedProcess(
+                                config.supervisor_pid, config.supervisor_identity
+                            )
+                        )
                     except ProcessLookupError:
                         pass
+                process = None
+                if config.pid:
+                    try:
+                        process = scope.enter_context(
+                            VerifiedProcess(config.pid, config.pid_identity)
+                        )
+                    except ProcessLookupError:
+                        pass
+
+                owner = supervisor or process
+                if owner is not None:
+                    namespace_fd = _pin_stop_mount_namespace(
+                        owner,
+                        config.supervisor_pid if supervisor else config.pid,
+                        (
+                            config.supervisor_identity
+                            if supervisor
+                            else config.pid_identity
+                        ),
+                    )
+                    if namespace_fd is not None:
+                        scope.callback(os.close, namespace_fd)
+
+                exit_code = None
+                if process is not None and process.alive():
+                    process.send(signal.SIGTERM)
+                    deadline = time.monotonic() + max(timeout, 0)
+                    while process.alive() and time.monotonic() < deadline:
+                        time.sleep(0.1)
+                    if process.alive():
+                        process.send(signal.SIGKILL)
+                        exit_code = 128 + signal.SIGKILL
+                        kill_deadline = time.monotonic() + 2.0
+                        while process.alive() and time.monotonic() < kill_deadline:
+                            time.sleep(0.02)
+                        if process.alive():
+                            raise ContainerInternalError(
+                                "Verified workload did not exit after SIGKILL"
+                            )
+                # The supervisor can still publish metadata after its workload
+                # exits, including when that workload was already dead on entry.
+                # Pinning delays mount teardown, never the writer-exit check.
+                if supervisor is not None:
+                    deadline = time.monotonic() + 2.0
+                    while supervisor.alive() and time.monotonic() < deadline:
+                        time.sleep(0.02)
+                    if supervisor.alive():
+                        raise ContainerInternalError(
+                            "Verified supervisor has not finished stopping"
+                        )
                 # waitid(P_PIDFD) cannot reap an unrelated reused numeric PID.
-                if hasattr(os, "P_PIDFD"):
+                if process is not None and hasattr(os, "P_PIDFD"):
                     try:
                         result = os.waitid(
                             os.P_PIDFD, process.fd, os.WEXITED | os.WNOHANG
@@ -1109,8 +1169,6 @@ class Container:
                 )
         except ProcessIdentityError as exc:
             raise ContainerInvalidStateError(str(exc)) from exc
-        except ProcessLookupError:
-            return self._finalize_stopped_container(container_id, config)
         except OSError as exc:
             raise ContainerInternalError(
                 f"Safe process control unavailable: {exc}"
