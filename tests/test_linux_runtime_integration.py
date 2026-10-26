@@ -408,7 +408,12 @@ try:
                 assert workload.alive(), ('benign sleep exited', stage)
                 with open('/proc/{}/stat'.format(running.pid)) as stream:
                     state=stream.read().rsplit(') ',1)[1].split()[0]
-                if state==expected:
+                # Linux reports tracing stops as t, including SIGSTOP under
+                # strace. TracerPid may be 0 when its tracer is outside this
+                # PID namespace. Both are actual kernel stop states; neither
+                # accepts a running task, and CONT must reach a live sleep.
+                stopped=state==expected or (expected=='T' and state=='t')
+                if stopped:
                     if expected=='S':
                         with open('/proc/{}/syscall'.format(running.pid)) as stream:
                             syscall=stream.read().split()[0]
