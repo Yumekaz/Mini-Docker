@@ -80,6 +80,13 @@ writeback or accepting a still-live metadata writer. The stop timeout controls
 the graceful-signal interval, not a hard upper bound on filesystem cleanup:
 slow or stalled storage can still delay the caller.
 
+A repeated Stop of a stopped record repeats identity/writer checks and cleanup;
+the recorded exit code and finish time are preserved. Unknown identity and
+cleanup failures remain errors, not successful acknowledgements. Remove retains
+metadata when cleanup fails so ownership and retry information are not lost.
+Detached supervisors release the caller's standard-input/output pipes and send
+their diagnostics to the private container log.
+
 Exec pins the verified namespaces and actual process root, waits for proven
 workload setup, and applies the workload's resource/security policies and user
 identity. It does not inherit the daemon's environment or supplementary groups.

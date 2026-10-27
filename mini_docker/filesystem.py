@@ -464,6 +464,8 @@ def cleanup_overlay(container_id: str) -> None:
     Args:
         container_id: Container ID whose overlay to clean up
     """
+    import errno
+
     lower, upper, work, merged = get_overlay_paths(container_id)
 
     # Unmount in reverse order of mounting
@@ -477,18 +479,71 @@ def cleanup_overlay(container_id: str) -> None:
     ]
 
     for path in mount_points:
-        if os.path.exists(path):
-            try:
-                umount(path, MNT_DETACH)
-            except FilesystemError:
-                pass
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise FilesystemError(
+                f"overlay target inspection({path}) failed: {exc}"
+            ) from exc
+        try:
+            # The existing wrapper records umount2 errno in ctypes' local
+            # slot. Clear stale values so an unclassified error fails closed.
+            ctypes.set_errno(0)
+            umount(path, MNT_DETACH)
+        except FilesystemError as exc:
+            code = ctypes.get_errno()
+            if code in (errno.ENOENT, errno.EINVAL):
+                # EINVAL also describes locked mounts. Only a verified
+                # nonmount is an expected already-cleaned target.
+                escaped = os.path.abspath(path)
+                for char, value in (
+                    ("\\", "134"),
+                    (" ", "040"),
+                    ("\t", "011"),
+                    ("\n", "012"),
+                ):
+                    escaped = escaped.replace(char, "\\" + value)
+                mounted = False
+                records = 0
+                try:
+                    with open("/proc/self/mountinfo", encoding="utf-8") as stream:
+                        for line in stream:
+                            fields = line.split()
+                            if len(fields) < 10 or "-" not in fields[6:]:
+                                raise FilesystemError(
+                                    "cannot verify overlay nonmount: malformed mountinfo"
+                                )
+                            records += 1
+                            mounted |= fields[4] == escaped
+                except OSError as info_error:
+                    raise FilesystemError(
+                        f"cannot verify overlay nonmount: {info_error}"
+                    ) from info_error
+                if records and not mounted:
+                    continue
+            # Do not detach parents or recurse into a mount after failure.
+            raise FilesystemError(f"overlay unmount({path}) failed: {exc}") from exc
 
-    # Remove directories
+    # Remove directories only after all target detachments were acknowledged.
     base = os.path.dirname(lower)
     try:
         shutil.rmtree(base)
-    except (OSError, IOError):
-        pass
+    except FileNotFoundError as exc:
+        # Only an absent top-level overlay is an idempotent success. A nested
+        # ENOENT can leave a partial tree and must not authorize metadata loss.
+        try:
+            os.lstat(base)
+        except FileNotFoundError:
+            return
+        except OSError as inspection_error:
+            raise FilesystemError(
+                f"cannot verify removed overlay({base}): {inspection_error}"
+            ) from inspection_error
+        raise FilesystemError(f"overlay removal({base}) failed: {exc}") from exc
+    except OSError as exc:
+        raise FilesystemError(f"overlay removal({base}) failed: {exc}") from exc
 
 
 def setup_minimal_dev(rootfs_path: str) -> None:

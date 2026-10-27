@@ -995,6 +995,21 @@ class Container:
         config.pid_identity = capture_identity(workload_pid)
         config.supervisor_identity = capture_identity(os.getpid())
         logger.close()
+        if not attach:
+            if detached_log_fd is None:
+                raise ContainerInternalError(
+                    "Detached supervisor missing private log fd"
+                )
+            # The workload redirects its own stdio, but this long-lived
+            # supervisor must also release the CLI/API caller's pipes. Keep
+            # diagnostics in the private container log, never in that caller.
+            private_input = os.open(os.devnull, os.O_RDONLY | os.O_CLOEXEC)
+            try:
+                os.dup2(private_input, 0)
+                os.dup2(detached_log_fd, 1)
+                os.dup2(detached_log_fd, 2)
+            finally:
+                os.close(private_input)
         if detached_log_fd is not None:
             try:
                 os.close(detached_log_fd)
@@ -1086,7 +1101,9 @@ class Container:
             raise ContainerInvalidStateError(
                 "Unverified process identity; no signal sent"
             )
-        if config.status != "running":
+        # A stopped record can still need cleanup after a failed Stop. Reuse
+        # the same identity checks and writer fence; status alone is no ACK.
+        if config.status not in ("running", "stopped"):
             raise ContainerInvalidStateError(f"Container not running: {container_id}")
         try:
             with ExitStack() as scope:
@@ -1197,12 +1214,25 @@ class Container:
                 "Unverified process identity; refusing cleanup"
             )
         if config.status == "running":
-            if force:
-                self.stop(container_id, timeout=5)
-            else:
+            if not force:
                 raise ContainerInvalidStateError(
                     f"Container is running. Stop first or use force=True"
                 )
+        if config.status in ("running", "stopped"):
+            # A terminal publish can precede supervisor exit. Only Stop's
+            # verified writer fence and successful cleanup authorize removal.
+            self.stop(container_id, timeout=5)
+            stopped_config = load_container_config(container_id)
+            if not stopped_config:
+                raise ContainerNotFoundError(f"Container not found: {container_id}")
+            if (
+                stopped_config.status != "stopped"
+                or stopped_config.started_at != config.started_at
+            ):
+                raise ContainerInvalidStateError(
+                    "Container changed during removal; refusing cleanup"
+                )
+            config = stopped_config
 
         # Wrap cleanup in try/except to ensure all cleanup attempted
         errors = []
@@ -1229,17 +1259,16 @@ class Container:
             # For now, we just clean up any temporary volume directories
             pass
 
-        # Delete metadata
+        # Keep retry information and surface failures instead of acknowledging
+        # deletion after only a partial cleanup.
+        if errors:
+            raise ContainerInternalError(
+                "Container removal cleanup failed: " + "; ".join(errors)
+            )
+
         from mini_docker.metadata import delete_container_config
 
-        result = delete_container_config(container_id)
-
-        # Log any errors but don't fail
-        if errors:
-            for err in errors:
-                print(f"Warning during cleanup: {err}", file=sys.stderr)
-
-        return result
+        return delete_container_config(container_id)
 
     def exec(
         self,
@@ -1445,7 +1474,29 @@ class Container:
         exit_code: Optional[int] = None,
     ) -> bool:
         """Persist stopped state and release one-start runtime resources."""
-        update_container_status(container_id, "stopped", exit_code=exit_code)
+        if config.status == "stopped":
+            from mini_docker.metadata import _commit_refreshed_state
+
+            # Stop already fenced any retained writer/process identities.
+            # Preserve the terminal publish, clearing only stale authority.
+            # Reuse the existing locked CAS rather than overwrite a new start.
+            expected = asdict(config)
+            config.pid = None
+            config.supervisor_pid = None
+            config.pid_identity = None
+            config.supervisor_identity = None
+            config.exec_ready = False
+            if config.finished_at is None:
+                config.finished_at = time.time()
+            if config.exit_code is None and exit_code is not None:
+                config.exit_code = exit_code
+            committed = _commit_refreshed_state(container_id, expected, config)
+            if committed is not config:
+                raise ContainerInvalidStateError(
+                    "Container changed during Stop; refusing cleanup"
+                )
+        else:
+            update_container_status(container_id, "stopped", exit_code=exit_code)
 
         cleanup_errors = self._cleanup_runtime_resources(config)
         if not any(

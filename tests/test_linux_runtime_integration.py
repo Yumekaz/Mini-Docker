@@ -495,6 +495,15 @@ try:
     mark(stage+'.exit', result=stop_result)
     assert load_container_config(config.id).status=='stopped'
     print('verified-stop')
+    stopped=load_container_config(config.id)
+    stage='stop-again'
+    mark(stage+'.begin', timeout=1)
+    assert (stop_again_result := manager.stop(config.id,timeout=1))
+    mark(stage+'.exit', result=stop_again_result)
+    stopped_again=load_container_config(config.id)
+    assert stopped_again.status=='stopped'
+    assert stopped_again.exit_code==stopped.exit_code
+    print('verified-idempotent-stop')
 except BaseException:
     primary_failure=True
     print('rootexec-original-failure ' + repr(dict(stage=stage,
@@ -546,6 +555,7 @@ finally:
     assert "verified-exec" in result.stdout
     assert "proc-protection-inspected" in result.stdout
     assert "verified-stop" in result.stdout
+    assert "verified-idempotent-stop" in result.stdout
 
 
 def test_readonly_proc_and_private_inert_control_masks(tmp_path):
